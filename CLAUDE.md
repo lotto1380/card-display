@@ -82,3 +82,4 @@ cd web && npm run icons                 # regenerate icons/ with headless Chromi
 ## Git
 
 - Commit small, with a one-line summary and a short body. Do not rewrite history on `main`.
+- History was squashed once on 2026-10-19 to remove test fixture text; do not rewrite history again.
