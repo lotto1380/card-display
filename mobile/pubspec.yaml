@@ -1,0 +1,28 @@
+name: card_display
+description: Private card capture and four-color e-paper preparation app.
+publish_to: none
+version: 0.2.0+2
+
+environment:
+  sdk: ">=3.10.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  camera: ^0.12.1
+  cryptography: ^2.9.0
+  flutter_secure_storage: ^11.2.0
+  gal: ^2.3.3
+  google_mlkit_text_recognition: ^0.17.1
+  image: ^4.11.1
+  path_provider: ^2.1.6
+  shared_preferences: ^2.5.6
+  uuid: ^4.6.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

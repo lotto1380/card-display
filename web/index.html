@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Card Display</title>
+  <meta name="description" content="Photograph a card, turn it into a 300×400 four-color image, and send it to an e-paper display.">
+  <meta name="theme-color" content="#F1F2EE" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#131514" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Card Display">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png" type="image/png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <button class="iconbtn" id="btn-back" type="button" aria-label="Back" hidden>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+  </button>
+  <h1 id="title">Card Display</h1>
+  <button class="iconbtn" id="btn-settings" type="button" aria-label="Settings">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+  </button>
+</header>
+
+<main>
+  <!-- HOME -->
+  <section id="screen-home" class="col">
+    <div>
+      <h2>Choose a game</h2>
+      <p class="muted">Your cards stay on this device unless you export one.</p>
+    </div>
+    <div class="tiles">
+      <button class="tile" type="button" data-game="mtg">
+        <span class="abbr">MTG</span>
+        <span class="name">Magic: The Gathering</span>
+      </button>
+      <button class="tile" type="button" data-game="swu">
+        <span class="abbr">SWU</span>
+        <span class="name">Star Wars: Unlimited</span>
+      </button>
+      <button class="tile wide" type="button" data-game="custom">
+        <span class="abbr">Other</span>
+        <span class="name">Any card or image</span>
+      </button>
+    </div>
+    <div class="note">
+      <strong>Output</strong>
+      <div class="contract">
+        <span class="swatches"><span class="sw k"></span><span class="sw w"></span><span class="sw r"></span><span class="sw y"></span></span>
+        <span class="mono">300 × 400 px</span>
+        <span>Four exact colors, ready for the Santek EZ Sign app.</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- LIBRARY -->
+  <section id="screen-library" class="col" hidden>
+    <div class="actions pair">
+      <button class="btn primary" id="btn-scan" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/></svg>
+        Scan card
+      </button>
+      <button class="btn" id="btn-copy" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
+        Copy card
+      </button>
+    </div>
+    <div class="search">
+      <input type="search" id="search" placeholder="Search saved cards" autocomplete="off">
+    </div>
+    <div>
+      <p class="eyebrow" id="list-label">Recently used</p>
+    </div>
+    <div class="list" id="list"></div>
+  </section>
+
+  <!-- CAMERA -->
+  <section id="screen-camera" class="col camera-col" hidden>
+    <div class="camera-stage" id="camera-stage">
+      <video id="camera-video" playsinline autoplay muted></video>
+      <div class="camera-frame" id="camera-frame" aria-hidden="true"></div>
+      <div class="camera-msg" id="camera-msg" hidden></div>
+    </div>
+    <p class="small muted center">Fill the frame with the card, straight on, out of its sleeve.</p>
+    <div class="actions">
+      <button class="btn primary block" id="btn-capture" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/></svg>
+        Capture
+      </button>
+    </div>
+    <div class="actions pair">
+      <button class="btn" id="btn-camera-app" type="button">Use camera app</button>
+      <button class="btn" id="btn-choose" type="button">Choose a photo</button>
+    </div>
+  </section>
+
+  <!-- REVIEW -->
+  <section id="screen-review" class="col" hidden>
+    <div class="warn" id="review-warn" hidden></div>
+    <div class="preview-wrap">
+      <canvas class="preview" id="review-canvas" width="300" height="400" aria-label="Processed card preview"></canvas>
+      <div class="contract">
+        <span class="swatches"><span class="sw k"></span><span class="sw w"></span><span class="sw r"></span><span class="sw y"></span></span>
+        <span class="mono">300 × 400</span>
+        <span>This is what the display will show.</span>
+      </div>
+    </div>
+    <div class="ocr" id="ocr-status" hidden>
+      <div class="ocr-line"><span id="ocr-label">Reading the card text…</span><span class="mono" id="ocr-pct"></span></div>
+      <div class="progress"><div id="ocr-bar"></div></div>
+    </div>
+    <div class="field">
+      <label for="f-name">Card name</label>
+      <input id="f-name" type="text" autocomplete="off" placeholder="As printed on the card">
+    </div>
+    <div class="field">
+      <label for="f-type">Type line</label>
+      <input id="f-type" type="text" autocomplete="off" placeholder="Creature — Goblin">
+    </div>
+    <div class="field">
+      <label for="f-rules">Game text</label>
+      <textarea id="f-rules" placeholder="Rules text, as printed"></textarea>
+    </div>
+    <div class="actions pair">
+      <button class="btn" id="btn-retake" type="button">Retake</button>
+      <button class="btn primary" id="btn-confirm" type="button">Confirm &amp; save</button>
+    </div>
+  </section>
+
+  <!-- FINAL -->
+  <section id="screen-final" class="col" hidden>
+    <div class="preview-wrap">
+      <img class="preview" id="final-img" alt="Saved card image">
+      <p class="small muted center" id="final-hint">Press and hold the image to save it to your photos.</p>
+    </div>
+    <dl class="kv" id="final-meta"></dl>
+    <div class="field">
+      <label class="check"><input type="checkbox" id="f-rotate"> Rotate 90° for a landscape display (400 × 300)</label>
+    </div>
+    <div class="actions">
+      <button class="btn primary block" id="btn-share" type="button" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7M12 15V3M7 8l5-5 5 5"/></svg>
+        Send to EZ Sign app
+      </button>
+      <button class="btn block" id="btn-download" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+        Download PNG
+      </button>
+    </div>
+    <div class="note">
+      <strong>Put it on the display</strong>
+      <ol class="steps">
+        <li>Send or save the PNG on this phone.</li>
+        <li>Open the Santek EZ Sign app and choose the image.</li>
+        <li>Hold the phone on the display until it refreshes.</li>
+      </ol>
+    </div>
+    <div class="actions pair">
+      <button class="btn" id="btn-final-back" type="button">Back to library</button>
+      <button class="btn danger" id="btn-delete" type="button">Delete card</button>
+    </div>
+  </section>
+
+  <!-- COPY CARD -->
+  <section id="screen-copy" class="col" hidden>
+    <div>
+      <h2>Copy card</h2>
+      <p class="muted small">Text only, no artwork. Edits appear directly on the image.</p>
+    </div>
+    <div class="preview-wrap">
+      <canvas class="preview" id="copy-canvas" width="300" height="400" aria-label="Copy card preview"></canvas>
+    </div>
+    <div class="field">
+      <label for="c-title">Title</label>
+      <input id="c-title" type="text" autocomplete="off" placeholder="Copied card">
+    </div>
+    <div class="field">
+      <label for="c-source">Copying card (optional)</label>
+      <input id="c-source" type="text" autocomplete="off" list="saved-names" placeholder="Name of the card doing the copying">
+      <datalist id="saved-names"></datalist>
+    </div>
+    <div class="field">
+      <label for="c-type">Type line</label>
+      <input id="c-type" type="text" autocomplete="off" placeholder="Creature — Shapeshifter">
+    </div>
+    <div class="field">
+      <label for="c-rules">Game text</label>
+      <textarea id="c-rules" placeholder="Rules text"></textarea>
+    </div>
+    <div class="actions pair">
+      <button class="btn" id="btn-copy-cancel" type="button">Cancel</button>
+      <button class="btn primary" id="btn-copy-save" type="button">Save copy card</button>
+    </div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section id="screen-settings" class="col" hidden>
+    <div>
+      <h2>Settings</h2>
+    </div>
+    <div class="note">
+      <strong>Privacy</strong>
+      <p class="small">Photos are processed in this browser and never uploaded. Text recognition runs on this device. Only the finished four-color image is kept, encrypted in this browser's storage. The original photo is discarded after you confirm or retake.</p>
+    </div>
+    <div class="note">
+      <strong>Output contract</strong>
+      <div class="contract">
+        <span class="swatches"><span class="sw k"></span><span class="sw w"></span><span class="sw r"></span><span class="sw y"></span></span>
+        <span class="mono">300 × 400 portrait</span>
+      </div>
+      <p class="small mono">#000000 · #FFFFFF · #FF0000 · #FFFF00</p>
+    </div>
+    <dl class="kv">
+      <dt>Storage</dt><dd id="storage-status">Checking</dd>
+      <dt>Saved cards</dt><dd id="card-count">0</dd>
+      <dt>Text recognition</dt><dd id="ocr-state">Loads on first scan</dd>
+      <dt>Offline</dt><dd id="offline-state">Checking</dd>
+      <dt>Version</dt><dd id="app-version">0.3.0 web</dd>
+    </dl>
+    <p class="small muted">User-captured physical cards only. No preloaded card database, no card images from the internet.</p>
+    <div class="actions">
+      <button class="btn danger block" id="btn-delete-all" type="button">Delete all cards</button>
+      <button class="btn primary block" id="btn-delete-all-confirm" type="button" hidden>Yes, delete everything</button>
+    </div>
+  </section>
+</main>
+
+<div class="sheet-backdrop" id="sheet" hidden>
+  <div class="sheet" role="dialog" aria-labelledby="sheet-title">
+    <h3 id="sheet-title">Remove the card sleeve</h3>
+    <p class="small muted">For the most accurate scan, take the card out of its sleeve. Sleeves create glare and make the edges and text harder to read.</p>
+    <button class="btn primary" id="btn-sheet-continue" type="button">Continue</button>
+    <button class="btn" id="btn-sheet-cancel" type="button">Cancel</button>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" hidden></div>
+
+<input type="file" id="file-camera" accept="image/*" capture="environment" hidden>
+<input type="file" id="file-library" accept="image/*" hidden>
+
+<script src="app.js" defer></script>
+</body>
+</html>
