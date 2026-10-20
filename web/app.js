@@ -4,7 +4,7 @@
 (() => {
   'use strict';
 
-  const APP_VERSION = '0.3.0';
+  const APP_VERSION = '0.4.0';
 
   // ---------------------------------------------------------------------------
   // Output contract
@@ -940,7 +940,7 @@
   // ---------------------------------------------------------------------------
   const $ = id => document.getElementById(id);
   const screens = ['home', 'library', 'camera', 'review', 'final', 'copystep', 'copy', 'settings'];
-  const state = { screen: 'home', game: null, review: null, current: null, currentCanvas: null, copy: null, history: [], objectUrls: [], ocrJob: 0 };
+  const state = { screen: 'home', game: null, review: null, current: null, currentCanvas: null, copy: null, history: [], ocrJob: 0 };
 
   function show(screen, title) {
     if (state.screen === 'camera' && screen !== 'camera') camera.stop();
@@ -964,9 +964,39 @@
     try { return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }); } catch (e) { return ''; }
   }
 
-  function releaseObjectUrls() {
-    for (const u of state.objectUrls) URL.revokeObjectURL(u);
-    state.objectUrls = [];
+  // Per-viewer preferences in localStorage; every access may throw (private mode, blocked storage).
+  const prefs = {
+    get(key, fallback) {
+      try { const v = localStorage.getItem('card_display.' + key); return v === null ? fallback : JSON.parse(v); } catch (e) { return fallback; }
+    },
+    set(key, value) {
+      try { localStorage.setItem('card_display.' + key, JSON.stringify(value)); } catch (e) { /* not remembered */ }
+    },
+  };
+
+  // Library thumbnails: 96×128, smoothly downscaled so the dither averages into
+  // tones. Cached per record id (as a promise of an object URL) for the session.
+  const thumbs = new Map();
+  function thumbnailUrl(record) {
+    if (!thumbs.has(record.id)) {
+      const job = (async () => {
+        const full = await bytesToCanvas(await repo.imageBytes(record));
+        const small = drawScaled(full, 0, 0, full.width, full.height, 96, 128);
+        const blob = await new Promise(r => small.toBlob(r, 'image/png'));
+        if (!blob) throw new Error('thumbnail encode failed');
+        return URL.createObjectURL(blob);
+      })();
+      job.catch(() => thumbs.delete(record.id));
+      thumbs.set(record.id, job);
+    }
+    return thumbs.get(record.id);
+  }
+  function dropThumbs(id) {
+    for (const [key, job] of thumbs) {
+      if (id && key !== id) continue;
+      job.then(url => URL.revokeObjectURL(url), () => {});
+      thumbs.delete(key);
+    }
   }
 
   // Home
@@ -990,7 +1020,6 @@
     if (query) records = records.filter(r => `${r.name} ${r.typeLine} ${r.rulesText}`.toLowerCase().includes(query));
     else records = records.slice(0, 10);
     $('list-label').textContent = query ? `${records.length} match${records.length === 1 ? '' : 'es'}` : 'Recently used';
-    releaseObjectUrls();
     list.replaceChildren();
     if (!records.length) {
       const empty = document.createElement('div');
@@ -1022,10 +1051,7 @@
       row.append(thumb, t, chip);
       row.addEventListener('click', () => openFinal(r));
       list.append(row);
-      repo.imageBytes(r).then(bytes => {
-        const url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
-        state.objectUrls.push(url); thumb.src = url;
-      }).catch(() => { thumb.alt = 'Unreadable'; });
+      thumbnailUrl(r).then(url => { thumb.src = url; }, () => { thumb.alt = 'Unreadable'; });
     }
   }
   $('search').addEventListener('input', () => { renderLibrary(); });
@@ -1243,7 +1269,6 @@
   // Final
   async function openFinal(record) {
     state.current = record;
-    releaseObjectUrls();
     try {
       const bytes = await repo.imageBytes(record);
       state.currentCanvas = await bytesToCanvas(bytes);
@@ -1252,7 +1277,7 @@
       toast('This card image could not be read.');
       return;
     }
-    $('f-rotate').checked = false;
+    $('f-rotate').checked = prefs.get('rotate', false);
     renderFinalImage();
     const meta = $('final-meta');
     meta.replaceChildren();
@@ -1280,7 +1305,7 @@
     img.classList.toggle('landscape', $('f-rotate').checked);
     img.src = currentOutputCanvas().toDataURL('image/png');
   }
-  $('f-rotate').addEventListener('change', renderFinalImage);
+  $('f-rotate').addEventListener('change', () => { prefs.set('rotate', $('f-rotate').checked); renderFinalImage(); });
 
   async function sendWith(adapter, button) {
     button.disabled = true;
@@ -1306,6 +1331,7 @@
     }
     deleteArmed = false; $('btn-delete').textContent = 'Delete card';
     await repo.remove(state.current.id);
+    dropThumbs(state.current.id);
     toast('Deleted.');
     openLibrary(state.game);
   });
@@ -1423,6 +1449,7 @@
   $('btn-delete-all').addEventListener('click', () => { $('btn-delete-all-confirm').hidden = false; });
   $('btn-delete-all-confirm').addEventListener('click', async () => {
     await repo.clear();
+    dropThumbs();
     $('card-count').textContent = '0';
     $('btn-delete-all-confirm').hidden = true;
     toast('All cards deleted.');
@@ -1467,5 +1494,5 @@
   }
 
   // Exposed for the verification script only.
-  window.__cardDisplay = { ditherFourColors, snapToPalette, buildTextCard, preparePhoto, prepareForOcr, detectCard, findCardQuad, trimBorder, fitToCard, mergeCopy, mergeDraft, copyPatterns, exceptClause, inspectImage, parseOcrText, ocr, repo, store, transfer, PALETTE, APP_VERSION };
+  window.__cardDisplay = { ditherFourColors, snapToPalette, buildTextCard, preparePhoto, prepareForOcr, detectCard, findCardQuad, trimBorder, fitToCard, mergeCopy, mergeDraft, copyPatterns, exceptClause, inspectImage, parseOcrText, ocr, repo, store, transfer, prefs, thumbnailUrl, PALETTE, APP_VERSION };
 })();

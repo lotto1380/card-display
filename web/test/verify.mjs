@@ -375,6 +375,29 @@ await page.screenshot({ path: resolve(outDir, 'copy-final.png'), fullPage: true 
 await page.click('#btn-final-back');
 await page.waitForSelector('#screen-library:not([hidden])');
 
+// Library thumbnails are smooth 96×128 images; the final preview stays pixelated.
+await page.waitForFunction(() => [...document.querySelectorAll('#list .thumb')].every(t => t.complete && t.naturalWidth > 0), null, { timeout: 10000 });
+const thumbState = await page.evaluate(() => {
+  const t = document.querySelector('#list .thumb');
+  return { w: t.naturalWidth, h: t.naturalHeight, rendering: getComputedStyle(t).imageRendering, count: document.querySelectorAll('#list .row').length };
+});
+check('library thumbnails are smooth 96×128', thumbState.w === 96 && thumbState.h === 128 && thumbState.rendering !== 'pixelated', JSON.stringify(thumbState));
+
+// The Rotate 90° choice is remembered as the default.
+await page.click('#list .row');
+await page.waitForSelector('#screen-final:not([hidden])');
+const rotateBefore = await page.evaluate(() => ({ checked: document.getElementById('f-rotate').checked, rendering: getComputedStyle(document.getElementById('final-img')).imageRendering }));
+await page.check('#f-rotate');
+await page.click('#btn-final-back');
+await page.waitForSelector('#screen-library:not([hidden])');
+await page.click('#list .row');
+await page.waitForSelector('#screen-final:not([hidden])');
+const rotateAfter = await page.evaluate(() => ({ checked: document.getElementById('f-rotate').checked, landscape: document.getElementById('final-img').classList.contains('landscape'), stored: localStorage.getItem('card_display.rotate') }));
+check('final preview stays pixelated', rotateBefore.rendering === 'pixelated', rotateBefore.rendering);
+check('Rotate 90° is remembered as the default', !rotateBefore.checked && rotateAfter.checked && rotateAfter.landscape && rotateAfter.stored === 'true', JSON.stringify(rotateAfter));
+await page.click('#btn-final-back');
+await page.waitForSelector('#screen-library:not([hidden])');
+
 const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
 check('no horizontal overflow at 400px', !overflow);
 check('no page errors', errors.length === 0, errors.join(' | '));

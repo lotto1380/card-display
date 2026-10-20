@@ -39,7 +39,7 @@ put it on a Santek EZ Sign e-paper display. Two apps, one output contract.
 ## Commands
 
 ```sh
-cd web && npm install && npm test      # 20 checks: contract, storage, OCR parse, live OCR, UI flow
+cd web && npm install && npm test      # 56 checks: contract, auto-crop, storage, OCR parse, copy merge, live OCR, UI flows
 cd web && npm run serve                 # http://localhost:8080
 cd web && npm run icons                 # regenerate icons/ with headless Chromium
 ```
@@ -58,6 +58,9 @@ cd web && npm run icons                 # regenerate icons/ with headless Chromi
   function per pattern, each unit-tested; unrecognized text goes to `notes`.
 - Card records carry optional `pt` and `copiedCardName` (0.4.0). Optional fields
   need no IDB version bump; changing the shape of existing fields does.
+- Library thumbnails are 96×128, smoothly downscaled and cached per record id for
+  the session (not pixelated); the final preview stays pixelated, as on the badge.
+  The Rotate 90° choice is remembered in localStorage (`card_display.rotate`).
 - Keep it one `app.js`; sections are marked with banner comments. Add a module
   only if a section passes ~300 lines.
 - Screens are `<section id="screen-*">` toggled with the `hidden` attribute via

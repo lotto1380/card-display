@@ -149,7 +149,7 @@ p { margin: 0; }
   background: var(--surface); border: 1px solid var(--line);
 }
 .row:hover { border-color: var(--fg); }
-.row .thumb { width: 48px; height: 64px; border-radius: 4px; background: var(--surface-2); object-fit: cover; image-rendering: pixelated; border: 1px solid var(--line); }
+.row .thumb { width: 48px; height: 64px; border-radius: 4px; background: var(--surface-2); object-fit: cover; border: 1px solid var(--line); }
 .row .t { min-width: 0; display: grid; gap: 2px; }
 .row .t .n { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row .t .m { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
