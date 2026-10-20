@@ -59,7 +59,7 @@ const core = await page.evaluate(async () => {
   const wide = document.createElement('canvas'); wide.width = 1600; wide.height = 1200;
   wide.getContext('2d').fillStyle = '#888'; wide.getContext('2d').fillRect(0, 0, 1600, 1200);
   const wideOut = cd.preparePhoto(wide);
-  const text = cd.buildTextCard({ title: 'Copied Card With A Long Title That Needs Ellipsis', typeLine: 'Creature — Test Shapeshifter', rulesText: 'This is editable game text.\n\nIt wraps across lines.', sourceCardName: 'Copy Source' });
+  const text = cd.buildTextCard({ title: 'Copied Card With A Long Title That Needs Ellipsis', typeLine: 'Creature — Test Shapeshifter', rulesText: 'This is editable game text.\n\nIt wraps across lines.', sourceCardName: 'Copy Source', pt: '3/3' });
   const white = document.createElement('canvas'); white.width = 800; white.height = 1000;
   white.getContext('2d').fillStyle = '#fff'; white.getContext('2d').fillRect(0, 0, 800, 1000);
 
@@ -92,9 +92,61 @@ check('flat white photo raises glare + blur warnings', core.inspectWhite === 2);
 check('OCR parse: name', core.parsed.name === 'Ember Courier');
 check('OCR parse: type line', core.parsed.typeLine === 'Creature — Goblin Scout');
 check('OCR parse: rules drop P/T, illus., ©', core.parsed.rulesText === 'Haste\nWhenever Ember Courier attacks, draw a card.', JSON.stringify(core.parsed.rulesText));
+check('OCR parse: P/T kept as pt', core.parsed.pt === '2/2', JSON.stringify(core.parsed.pt));
 check('storage encrypted', core.storage.mode === 'encrypted', core.storage.mode);
 check('storage round trip', core.storage.saved === 1 && core.storage.sameLength && core.storage.header.join(',') === '137,80,78,71' && core.storage.afterDelete === 0);
 check('correction lookup normalizes names', core.storage.correctionOk);
+
+// Copy merge: each except-clause pattern on its own, then whole-card fixtures.
+// Every name and line of rules text here is invented.
+const merge = await page.evaluate(() => {
+  const cd = window.__cardDisplay, P = cd.copyPatterns;
+  const run = (key, clause, target) => { const d = cd.mergeDraft(target); const rest = P[key](clause, d); return { ...d, rest: rest.replace(/\0/g, '') }; };
+  const courier = { name: 'Ember Courier', typeLine: 'Creature — Goblin Scout', rulesText: 'Haste\nWhenever Ember Courier attacks, draw a card.', pt: '2/2' };
+  const elder = { name: 'Thornwood Elder', typeLine: 'Legendary Creature — Elf Druid', rulesText: 'Reach', pt: '1/3' };
+  const beacon = { name: 'Brass Beacon', typeLine: 'Artifact', rulesText: 'Tap: Scry 1.', pt: '' };
+  const copier = (name, rulesText) => ({ name, typeLine: 'Creature — Shapeshifter', rulesText, pt: '0/0' });
+  return {
+    patterns: {
+      quoted: run('quoted', `it has 'Draw a card.' and "Gain 1 life."`, courier).abilities,
+      name: run('name', 'with the name Quiet Echo', courier).name,
+      cardType: run('cardType', "it's an artifact in addition to its other types", { typeLine: 'Creature — Golem' }).typeLine,
+      subtype: run('subtype', "it's a Spirit Warrior in addition to its other types", { typeLine: 'Creature' }).typeLine,
+      legendaryAdd: run('legendary', "it's legendary", { typeLine: 'Creature — Elf' }).typeLine,
+      legendaryRemove: run('legendary', "it's not legendary", elder).typeLine,
+      keyword: run('keyword', 'it has first strike, trample and lifelink', courier).keywords,
+      gets: (d => [d.power, d.toughness, d.boosted])(run('counters', 'it gets +2/+2', courier)),
+      enters: (d => [d.power, d.toughness])(run('counters', 'it enters with two +1/+1 counters on it', courier)),
+      color: run('color', "it's colorless", courier).color,
+      clause: cd.exceptClause('Twin Lantern enters as a copy of an artifact, except it has “Tap: Add one mana.” and “Gain 1 life.” When it leaves, draw a card.'),
+    },
+    fixtures: {
+      plain: cd.mergeCopy(copier('Glass Mimic', 'You may have Glass Mimic enter as a copy of any creature on the battlefield.'), courier),
+      subtypeQuoted: cd.mergeCopy(copier('Mirror Wisp', 'You may have Mirror Wisp enter as a copy of a creature you control, except it\'s a Spirit in addition to its other types and it has "When this enters, look at the top card of your deck."'), courier),
+      legendaryCounter: cd.mergeCopy(copier('Echo Sapling', 'Echo Sapling enters as a copy of a creature you control, except it isn\'t legendary and it enters with an additional +1/+1 counter on it.'), elder),
+      twoQuoted: cd.mergeCopy(copier('Twin Lantern', 'Twin Lantern enters as a copy of an artifact, except it has “Tap: Add one mana.” and “At the beginning of your upkeep, gain 1 life.” When Twin Lantern leaves, draw a card.'), beacon),
+      unknown: cd.mergeCopy(copier('Odd Reflection', 'Odd Reflection enters as a copy of any creature, except its power is equal to the number of cards in your hand.'), courier),
+      nameColorKeywords: cd.mergeCopy(copier('Prism Double', 'Prism Double enters as a copy of a creature, except it\'s named Shard Twin, it\'s blue and it has flying and haste.'), courier),
+    },
+    courier,
+  };
+});
+const mp = merge.patterns, mf = merge.fixtures, same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+check('copy pattern: quoted abilities', same(mp.quoted, ['Draw a card.', 'Gain 1 life.']), JSON.stringify(mp.quoted));
+check('copy pattern: name', mp.name === 'Quiet Echo', mp.name);
+check('copy pattern: card type before the dash', mp.cardType === 'Artifact Creature — Golem', mp.cardType);
+check('copy pattern: subtypes after the dash', mp.subtype === 'Creature — Spirit Warrior', mp.subtype);
+check('copy pattern: legendary add / remove', mp.legendaryAdd === 'Legendary Creature — Elf' && mp.legendaryRemove === 'Creature — Elf Druid', `${mp.legendaryAdd} | ${mp.legendaryRemove}`);
+check('copy pattern: keywords', same(mp.keyword, ['First strike', 'Trample', 'Lifelink']), JSON.stringify(mp.keyword));
+check('copy pattern: gets +N/+N and +1/+1 counters', same(mp.gets, [2, 2, true]) && same(mp.enters, [2, 2]), JSON.stringify([mp.gets, mp.enters]));
+check('copy pattern: color', mp.color === 'colorless', mp.color);
+check('except clause ends at the sentence, not inside quotes', mp.clause === 'it has “Tap: Add one mana.” and “Gain 1 life.”', mp.clause);
+check('merge: plain copy is the target unchanged', same(mf.plain, { ...merge.courier, notes: '' }), JSON.stringify(mf.plain));
+check('merge: subtype + quoted ability', mf.subtypeQuoted.typeLine === 'Creature — Goblin Scout Spirit' && mf.subtypeQuoted.rulesText === merge.courier.rulesText + '\n\nWhen this enters, look at the top card of your deck.' && !mf.subtypeQuoted.notes, JSON.stringify(mf.subtypeQuoted));
+check('merge: legendary removed + counter', mf.legendaryCounter.typeLine === 'Creature — Elf Druid' && mf.legendaryCounter.pt === '1/3 (+1/+1)' && !mf.legendaryCounter.notes, JSON.stringify(mf.legendaryCounter));
+check('merge: two quoted abilities', mf.twoQuoted.rulesText === 'Tap: Scry 1.\n\nTap: Add one mana.\n\nAt the beginning of your upkeep, gain 1 life.' && !mf.twoQuoted.notes, JSON.stringify(mf.twoQuoted));
+check('merge: unrecognized clause lands in notes', mf.unknown.notes === 'its power is equal to the number of cards in your hand' && mf.unknown.rulesText.endsWith('\n\nExcept: its power is equal to the number of cards in your hand'), JSON.stringify(mf.unknown));
+check('merge: name, color and keywords', mf.nameColorKeywords.name === 'Shard Twin' && mf.nameColorKeywords.rulesText === merge.courier.rulesText + '\nFlying\nHaste\nColor: blue' && !mf.nameColorKeywords.notes, JSON.stringify(mf.nameColorKeywords));
 
 // Auto-crop on synthetic photos: a bordered card and a borderless card, each
 // rotated 7° with mild keystone on a wood-colored background, and a photo with
@@ -262,6 +314,67 @@ check('card found: review defaults to Auto', autoState.auto === 'true' && /found
 check('Crop toggle redraws the preview', toggled === 'true' && autoSig !== fullSig);
 await page.click('#btn-back');
 await page.waitForSelector('#screen-library:not([hidden])');
+// Copy card from two photos: scan the copier, scan the target, review, save.
+const cardPng = async lines => page.evaluate(async lines => {
+  const c = document.createElement('canvas'); c.width = 900; c.height = 1200;
+  const g = c.getContext('2d'); g.fillStyle = '#f4efe2'; g.fillRect(0, 0, 900, 1200); g.fillStyle = '#000';
+  for (const [text, font, x, y] of lines) { g.font = font; g.fillText(text, x, y); }
+  const b = await new Promise(r => c.toBlob(r, 'image/png'));
+  return Array.from(new Uint8Array(await b.arrayBuffer()));
+}, lines);
+const copierPath = resolve(outDir, 'copier.png'), targetPath = resolve(outDir, 'target.png');
+await writeFile(copierPath, Buffer.from(await cardPng([['Glass Mimic', 'bold 52px Arial', 60, 110], ['Creature - Shapeshifter', '40px Arial', 60, 760], ['Enter as a copy of a creature,', '36px Arial', 60, 850], ['except it has haste.', '36px Arial', 60, 910]])));
+await writeFile(targetPath, Buffer.from(await cardPng([['Ember Courier', 'bold 52px Arial', 60, 110], ['Creature - Goblin Scout', '40px Arial', 60, 760], ['Whenever Ember Courier attacks,', '36px Arial', 60, 850], ['draw a card.', '36px Arial', 60, 910], ['2/2', 'bold 40px Arial', 760, 1140]])));
+const scanCopyStep = async path => {
+  await page.click('#btn-cs-scan');
+  await page.click('#btn-sheet-continue');
+  await page.waitForSelector('#screen-camera:not([hidden])');
+  await page.setInputFiles('#file-library', path);
+  await page.waitForSelector('#screen-copystep:not([hidden])', { timeout: 15000 });
+  await page.waitForFunction(() => /Text read|No text|not available/.test(document.getElementById('cs-ocr-label').textContent), null, { timeout: 60000 });
+  return page.evaluate(() => ({ name: document.getElementById('cs-name').value, rules: document.getElementById('cs-rules').value, pt: document.getElementById('cs-pt').value }));
+};
+await page.click('#btn-copy');
+await page.waitForSelector('#screen-copystep:not([hidden])');
+const step1 = await scanCopyStep(copierPath);
+check('copy step 1: OCR read the copying card', /glass mimic/i.test(step1.name), JSON.stringify(step1));
+await page.fill('#cs-name', 'Glass Mimic');
+await page.fill('#cs-rules', 'Enter as a copy of a creature, except it has haste.');
+await page.click('#btn-cs-next');
+const step2 = await scanCopyStep(targetPath);
+check('copy step 2: OCR read the copied card', /ember courier/i.test(step2.name), JSON.stringify(step2));
+await page.fill('#cs-name', 'Ember Courier');
+await page.fill('#cs-type', 'Creature — Goblin Scout');
+await page.fill('#cs-rules', 'Whenever Ember Courier attacks, draw a card.');
+await page.fill('#cs-pt', '2/2');
+await page.click('#btn-cs-next');
+await page.waitForSelector('#screen-copy:not([hidden])');
+const copyReview = await page.evaluate(() => ({ name: document.getElementById('c-title').value, rules: document.getElementById('c-rules').value, pt: document.getElementById('c-pt').value, source: document.getElementById('c-source').value, target: document.getElementById('c-target').value }));
+check('copy review shows the merged card', copyReview.name === 'Ember Courier' && copyReview.rules.endsWith('\nHaste') && copyReview.pt === '2/2' && copyReview.source === 'Glass Mimic' && copyReview.target === 'Ember Courier', JSON.stringify(copyReview));
+await page.waitForTimeout(200);
+await page.screenshot({ path: resolve(outDir, 'copy-review.png'), fullPage: true });
+await page.click('#btn-copy-save');
+await page.waitForSelector('#screen-final:not([hidden])', { timeout: 10000 });
+const savedCopy = await page.evaluate(async () => {
+  const cd = window.__cardDisplay;
+  const rec = (await cd.repo.all('mtg')).find(r => r.isCopy);
+  if (!rec) return null;
+  const bmp = await createImageBitmap(new Blob([await cd.repo.imageBytes(rec)], { type: 'image/png' }));
+  const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height;
+  const g = c.getContext('2d'); g.drawImage(bmp, 0, 0);
+  const d = g.getImageData(0, 0, c.width, c.height).data, set = new Set(cd.PALETTE.map(p => p.join(',')));
+  let palette = true;
+  for (let p = 0; p < d.length; p += 4) if (!set.has(`${d[p]},${d[p + 1]},${d[p + 2]}`) || d[p + 3] !== 255) { palette = false; break; }
+  return { isCopy: rec.isCopy, sourceCardName: rec.sourceCardName, copiedCardName: rec.copiedCardName, pt: rec.pt, w: c.width, h: c.height, palette };
+});
+check('saved copy record has isCopy, sourceCardName, copiedCardName', !!savedCopy && savedCopy.isCopy === true && savedCopy.sourceCardName === 'Glass Mimic' && savedCopy.copiedCardName === 'Ember Courier', JSON.stringify(savedCopy));
+check('saved copy image is 300×400 palette-only', !!savedCopy && savedCopy.w === 300 && savedCopy.h === 400 && savedCopy.palette);
+const finalMeta = await page.evaluate(() => document.getElementById('final-meta').textContent);
+check('final screen lists P/T and Copy of', /P\/T2\/2 \(|P\/T2\/2/.test(finalMeta) && /Copy ofEmber Courier/.test(finalMeta), JSON.stringify(finalMeta));
+await page.screenshot({ path: resolve(outDir, 'copy-final.png'), fullPage: true });
+await page.click('#btn-final-back');
+await page.waitForSelector('#screen-library:not([hidden])');
+
 const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
 check('no horizontal overflow at 400px', !overflow);
 check('no page errors', errors.length === 0, errors.join(' | '));

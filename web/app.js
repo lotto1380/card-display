@@ -459,7 +459,8 @@
     return out;
   }
 
-  function buildTextCard({ title, typeLine, rulesText, sourceCardName }) {
+  function buildTextCard({ title, typeLine, rulesText, sourceCardName, pt }) {
+    const hasPt = !!(pt && pt.trim());
     const c = makeCanvas(W, H);
     const g = c.getContext('2d');
     g.fillStyle = '#fff'; g.fillRect(0, 0, W, H);
@@ -484,11 +485,193 @@
     g.fillRect(10, y, 280, 2);
     y += 10;
     for (const line of wrapToWidth(g, rulesText || '', 280)) {
-      if (y > 376) break;
+      if (y > (hasPt ? 356 : 376)) break; // leave the bottom-right corner to P/T
       g.fillText(line, 10, y); y += 18;
+    }
+    if (hasPt) {
+      g.font = `700 14px ${FONT_STACK}`;
+      g.textAlign = 'right'; g.textBaseline = 'alphabetic';
+      g.fillText(ellipsizeToWidth(g, pt.trim(), 140), 290, 386);
+      g.textAlign = 'left';
     }
     g.putImageData(snapToPalette(g.getImageData(0, 0, W, H)), 0, 0);
     return c;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Copy card merge: start from the copied card, apply the copier's
+  // "copy of … except …" clause. Each pattern blanks what it consumed (NUL
+  // characters, so later patterns cannot match across it); whatever is left
+  // lands in notes as "Except: …" so nothing is lost.
+  // ---------------------------------------------------------------------------
+  const KEYWORDS = ['first strike', 'double strike', 'flying', 'deathtouch', 'haste', 'hexproof', 'indestructible', 'lifelink', 'menace', 'reach', 'trample', 'vigilance', 'flash', 'defender'];
+  const CARD_TYPES = 'artifact|enchantment|creature';
+  const COLORS = 'white|blue|black|red|green';
+  const NUMBER_WORDS = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+  const QUOTED = `["“][^"”]*["”]|‘[^’]*’|'.+?'(?=[\\s,.;]|$)`;
+  const LIST_SEP = '\\s*(?:,\\s*and|,|and)\\s*';
+  const IT_IS = "\\bit(?:'s| is)";
+
+  const capitalize = s => s.charAt(0).toUpperCase() + s.slice(1);
+  const signed = n => (n >= 0 ? '+' : '') + n;
+
+  function consume(clause, m) {
+    return clause.slice(0, m.index) + '\0'.repeat(m[0].length) + clause.slice(m.index + m[0].length);
+  }
+
+  function splitType(typeLine) {
+    const m = /\s+[—–-]\s+|\s*[—–]\s*/.exec(typeLine);
+    return m ? { left: typeLine.slice(0, m.index).trim(), right: typeLine.slice(m.index + m[0].length).trim() } : { left: typeLine.trim(), right: '' };
+  }
+  const joinType = (left, right) => (right ? `${left} — ${right}` : left).trim();
+
+  // The text after "except" in the sentence that says "copy of", ending at the
+  // first period outside quotes. Empty when there is no such clause.
+  function exceptClause(rulesText) {
+    const text = rulesText.replace(/\s+/g, ' ').replace(/(\w)’(\w)/g, "$1'$2");
+    const copy = text.search(/\bcopy of\b/i);
+    if (copy < 0) return '';
+    const m = /\bexcept\b/i.exec(text.slice(copy));
+    if (!m) return '';
+    const start = copy + m.index + m[0].length;
+    let closers = '';
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i];
+      if (closers) {
+        if (closers.includes(ch) && (ch !== "'" || !/\w/.test(text[i + 1] || ''))) {
+          closers = '';
+          // `… has "Gain 1 life." When …`: the sentence ended inside the quote.
+          if (text[i - 1] === '.' && /^(?:\s+[A-Z]|\s*$)/.test(text.slice(i + 1))) return text.slice(start, i + 1).trim();
+        }
+        continue;
+      }
+      if (ch === '"' || ch === '“') closers = '"”';
+      else if (ch === '‘') closers = '’';
+      else if (ch === "'" && /\s/.test(text[i - 1] || ' ')) closers = "'";
+      else if (ch === '.' && (i + 1 === text.length || text[i + 1] === ' ')) return text.slice(start, i).trim();
+    }
+    return text.slice(start).trim();
+  }
+
+  function mergeDraft(target) {
+    return { name: target.name || '', typeLine: target.typeLine || '', pt: target.pt || '', abilities: [], keywords: [], color: '', power: 0, toughness: 0, boosted: false };
+  }
+
+  const copyPatterns = {
+    // has "…" / with '…' (several allowed) → each becomes its own paragraph.
+    quoted(clause, d) {
+      const re = new RegExp(`\\b(?:has|have|gains?|with)\\s+((?:${QUOTED})(?:${LIST_SEP}(?:${QUOTED}))*)`, 'gi');
+      for (const m of clause.matchAll(re)) {
+        for (const q of m[1].matchAll(new RegExp(QUOTED, 'g'))) d.abilities.push(q[0].slice(1, -1).trim());
+        clause = consume(clause, m);
+      }
+      return clause;
+    },
+    // it's named <Name> / with the name <Name> → replaces the name.
+    name(clause, d) {
+      for (const m of clause.matchAll(/\b(?:it(?:'s| is) named|its name is|with the name)\s+([^,\0]+?)(?=\s*(?:,|\band\b|\0|$))/gi)) {
+        d.name = m[1].trim();
+        clause = consume(clause, m);
+      }
+      return clause;
+    },
+    // it's an artifact/enchantment/creature in addition → card type before the dash.
+    cardType(clause, d) {
+      const re = new RegExp(`${IT_IS} an? ((?:${CARD_TYPES})(?:\\s+(?:${CARD_TYPES}))*)\\s+in addition(?: to its other (?:\\w+ )?types)?`, 'gi');
+      for (const m of clause.matchAll(re)) {
+        for (const type of m[1].split(/\s+/)) {
+          const { left, right } = splitType(d.typeLine);
+          const words = left ? left.split(/\s+/) : [];
+          if (words.some(w => w.toLowerCase() === type.toLowerCase())) continue;
+          let at = 0;
+          while (at < words.length && /^(?:legendary|basic|snow|world)$/i.test(words[at])) at++;
+          words.splice(at, 0, capitalize(type.toLowerCase()));
+          d.typeLine = joinType(words.join(' '), right);
+        }
+        clause = consume(clause, m);
+      }
+      return clause;
+    },
+    // it's a/an <Word(s)> in addition to its other types → subtypes after the dash.
+    subtype(clause, d) {
+      for (const m of clause.matchAll(new RegExp(`${IT_IS} an? ([A-Za-z][\\w'-]*(?:\\s+[A-Za-z][\\w'-]*)*?)\\s+in addition to its other (?:\\w+ )?types`, 'gi'))) {
+        const { left, right } = splitType(d.typeLine);
+        const have = right ? right.split(/\s+/) : [];
+        for (const word of m[1].split(/\s+/).map(capitalize)) if (!have.includes(word)) have.push(word);
+        d.typeLine = joinType(left, have.join(' '));
+        clause = consume(clause, m);
+      }
+      return clause;
+    },
+    // it's legendary / it isn't legendary / it's not legendary.
+    legendary(clause, d) {
+      for (const m of clause.matchAll(/\bit(?:'s| is)(?: (not))? legendary\b|\bit isn't legendary\b/gi)) {
+        const remove = !!m[1] || /isn't/i.test(m[0]);
+        const plain = d.typeLine.replace(/^legendary\s+/i, '');
+        d.typeLine = remove ? plain : 'Legendary ' + plain;
+        clause = consume(clause, m);
+      }
+      return clause;
+    },
+    // has <keyword>[, <keyword> and <keyword>] → one line each.
+    keyword(clause, d) {
+      const kw = `(?:${KEYWORDS.join('|')})`;
+      for (const m of clause.matchAll(new RegExp(`\\b(?:has|have|gains?)\\s+(${kw}(?:${LIST_SEP}${kw})*)\\b`, 'gi'))) {
+        for (const k of m[1].split(new RegExp(LIST_SEP, 'i'))) if (k) d.keywords.push(capitalize(k.toLowerCase()));
+        clause = consume(clause, m);
+      }
+      return clause;
+    },
+    // gets +N/+N, enters with a/one/two/N (additional) +1/+1 counter(s) → "(+N/+N)" after P/T.
+    counters(clause, d) {
+      for (const m of clause.matchAll(/\bgets\s+([+-]\d+)\/([+-]\d+)/gi)) {
+        d.power += Number(m[1]); d.toughness += Number(m[2]); d.boosted = true;
+        clause = consume(clause, m);
+      }
+      for (const m of clause.matchAll(/\benters(?: the battlefield)? with (an?|one|two|three|four|five|six|seven|eight|nine|ten|\d+)(?: additional)? \+1\/\+1 counters?(?: on it)?/gi)) {
+        const n = NUMBER_WORDS[m[1].toLowerCase()] || Number(m[1]);
+        d.power += n; d.toughness += n; d.boosted = true;
+        clause = consume(clause, m);
+      }
+      return clause;
+    },
+    // it's <color>[ and <color>] / it's colorless → "Color: …" line.
+    color(clause, d) {
+      const re = new RegExp(`${IT_IS} (colorless|(?:${COLORS})(?:${LIST_SEP}(?:${COLORS}))*)( in addition to its other colors)?\\b`, 'gi');
+      for (const m of clause.matchAll(re)) {
+        d.color = m[1].toLowerCase() + (m[2] || '');
+        clause = consume(clause, m);
+      }
+      return clause;
+    },
+  };
+  const PATTERN_ORDER = ['quoted', 'name', 'cardType', 'subtype', 'legendary', 'keyword', 'counters', 'color'];
+
+  // Unconsumed pieces of the clause, minus connective words.
+  function exceptLeftovers(clause) {
+    const filler = /^(?:and|also|it|its|has|have|with|that|the|copy)$/i;
+    return clause.split(/\0+/)
+      .map(s => s.replace(/^[\s,;]+|[\s,;.]+$/g, '').replace(/^(?:and|also)\s+/i, '').trim())
+      .filter(s => s && !s.split(/[\s,;]+/).every(w => filler.test(w)))
+      .join('; ');
+  }
+
+  function mergeCopy(copier, target) {
+    const rules = (target.rulesText || '').trim();
+    const clause = exceptClause(copier.rulesText || '');
+    if (!clause) return { name: target.name || '', typeLine: target.typeLine || '', rulesText: rules, pt: target.pt || '', notes: '' };
+    const d = mergeDraft(target);
+    let rest = clause;
+    for (const key of PATTERN_ORDER) rest = copyPatterns[key](rest, d);
+    const notes = exceptLeftovers(rest);
+    let rulesText = rules;
+    const add = (sep, s) => { rulesText = rulesText ? rulesText + sep + s : s; };
+    for (const a of d.abilities) add('\n\n', a);
+    for (const k of d.keywords) add('\n', k);
+    if (d.color) add('\n', 'Color: ' + d.color);
+    if (notes) add('\n\n', 'Except: ' + notes);
+    const pt = d.boosted ? `${d.pt} (${signed(d.power)}/${signed(d.toughness)})`.trim() : d.pt;
+    return { name: d.name, typeLine: d.typeLine, rulesText, pt, notes };
   }
 
   function rotateCanvas(src) { // 300×400 → 400×300, clockwise
@@ -521,12 +704,15 @@
   // ---------------------------------------------------------------------------
   // OCR (port of OcrService._parse; recognition by Tesseract.js, on device)
   // ---------------------------------------------------------------------------
+  const PT_LINE = /^\d+\s*\/\s*\d+$/;
   const TYPE_WORDS = ['creature', 'artifact', 'enchantment', 'planeswalker', 'instant', 'sorcery', 'land', 'unit', 'upgrade', 'event'];
 
   function parseOcrText(rawText) {
     const lines = rawText.split(/[\r\n]+/).map(l => l.trim()).filter(l => l.length > 1);
-    if (!lines.length) return { name: '', typeLine: '', rulesText: '', rawText: '' };
+    if (!lines.length) return { name: '', typeLine: '', rulesText: '', pt: '', rawText: '' };
     const name = lines[0];
+    const ptLine = lines.slice(1).find(line => PT_LINE.test(line));
+    const pt = ptLine ? ptLine.replace(/\s+/g, '') : '';
     let typeIndex = -1;
     for (let i = 1; i < lines.length; i++) {
       const lower = lines[i].toLowerCase();
@@ -536,9 +722,9 @@
     const rulesStart = typeIndex >= 0 ? typeIndex + 1 : 1;
     const rulesText = lines.slice(rulesStart).filter(line => {
       const lower = line.toLowerCase();
-      return !/^\d+\s*\/\s*\d+$/.test(line) && !lower.includes('©') && !lower.startsWith('illus.');
+      return !PT_LINE.test(line) && !lower.includes('©') && !lower.startsWith('illus.');
     }).join('\n');
-    return { name, typeLine, rulesText, rawText };
+    return { name, typeLine, rulesText, pt, rawText };
   }
 
   const ocr = {
@@ -603,6 +789,9 @@
         const req = indexedDB.open('card_display', 1);
         req.onupgradeneeded = () => {
           const db = req.result;
+          // Card records are schemaless values keyed by id. Adding optional fields
+          // (pt and copiedCardName in 0.4.0) needs no version bump or migration;
+          // readers treat a missing field as empty.
           if (!db.objectStoreNames.contains('cards')) db.createObjectStore('cards', { keyPath: 'id' });
           if (!db.objectStoreNames.contains('corrections')) db.createObjectStore('corrections');
           if (!db.objectStoreNames.contains('keys')) db.createObjectStore('keys');
@@ -660,13 +849,13 @@
       } else records = [...store.mem.cards.values()];
       return records.filter(r => !game || r.game === game).sort((a, b) => b.updatedAt - a.updatedAt);
     },
-    async save({ game, name, typeLine, rulesText, pngBytes, isCopy = false, sourceCardName = null }) {
+    async save({ game, name, typeLine, rulesText, pt = '', pngBytes, isCopy = false, sourceCardName = null, copiedCardName = null }) {
       const now = Date.now();
       const record = {
         id: uuid(), game,
         name: name.trim() || 'Untitled card',
-        typeLine: typeLine.trim(), rulesText: rulesText.trim(),
-        createdAt: now, updatedAt: now, isCopy, sourceCardName,
+        typeLine: typeLine.trim(), rulesText: rulesText.trim(), pt: pt.trim(),
+        createdAt: now, updatedAt: now, isCopy, sourceCardName, copiedCardName,
         payload: await sealBytes(pngBytes),
       };
       if (store.db) { try { await idb('cards', 'readwrite', s => s.put(record)); return record; } catch (e) { /* fall through */ } }
@@ -750,8 +939,8 @@
   // UI
   // ---------------------------------------------------------------------------
   const $ = id => document.getElementById(id);
-  const screens = ['home', 'library', 'camera', 'review', 'final', 'copy', 'settings'];
-  const state = { screen: 'home', game: null, review: null, current: null, currentCanvas: null, history: [], objectUrls: [], ocrJob: 0 };
+  const screens = ['home', 'library', 'camera', 'review', 'final', 'copystep', 'copy', 'settings'];
+  const state = { screen: 'home', game: null, review: null, current: null, currentCanvas: null, copy: null, history: [], objectUrls: [], ocrJob: 0 };
 
   function show(screen, title) {
     if (state.screen === 'camera' && screen !== 'camera') camera.stop();
@@ -787,6 +976,7 @@
 
   async function openLibrary(game) {
     state.game = game;
+    state.copy = null;
     $('search').value = '';
     show('library', GAMES[game].short);
     await renderLibrary();
@@ -842,8 +1032,12 @@
 
   // Sleeve warning, then camera
   $('btn-scan').addEventListener('click', () => { $('sheet').hidden = false; $('btn-sheet-continue').focus(); });
-  $('btn-sheet-cancel').addEventListener('click', () => { $('sheet').hidden = true; });
-  $('sheet').addEventListener('click', e => { if (e.target === $('sheet')) $('sheet').hidden = true; });
+  function closeSheet() {
+    $('sheet').hidden = true;
+    if (state.copy) state.copy.scanning = false;
+  }
+  $('btn-sheet-cancel').addEventListener('click', closeSheet);
+  $('sheet').addEventListener('click', e => { if (e.target === $('sheet')) closeSheet(); });
   $('btn-sheet-continue').addEventListener('click', () => { $('sheet').hidden = true; openCamera(); });
 
   // Camera
@@ -873,7 +1067,7 @@
   };
 
   async function openCamera() {
-    show('camera', 'Scan card');
+    show('camera', state.copy && state.copy.scanning ? COPY_STEPS[state.copy.step].title : 'Scan card');
     const msg = $('camera-msg');
     msg.hidden = true;
     $('btn-capture').disabled = false;
@@ -915,6 +1109,7 @@
   }
 
   async function processSource(source) {
+    if (state.copy && state.copy.scanning) { copyScanned(source); return; }
     toast('Processing photo…', 8000);
     try {
       const quality = inspectImage(source);
@@ -959,15 +1154,29 @@
       warn.hidden = false;
     } else warn.hidden = true;
     drawReview();
-    $('f-name').value = ''; $('f-type').value = ''; $('f-rules').value = '';
+    $('f-name').value = ''; $('f-type').value = ''; $('f-rules').value = ''; $('f-pt').value = '';
     show('review', 'Review');
-    runOcr();
+    const source = state.review.ocrCanvas;
+    runOcr(source, '', parsed => {
+      if (state.review) state.review.ocrCanvas = null;
+      return fillFields(parsed, { name: 'f-name', typeLine: 'f-type', rulesText: 'f-rules', pt: 'f-pt' });
+    });
   }
 
-  async function runOcr() {
+  // Fill empty fields from OCR, preferring an earlier correction for that name.
+  async function fillFields(parsed, ids) {
+    const correction = parsed.name ? await repo.correctionFor(state.game, parsed.name) : null;
+    for (const [key, id] of Object.entries(ids)) {
+      if (!$(id).value.trim()) $(id).value = (correction && correction[key]) || parsed[key] || '';
+    }
+    if (correction) toast('Filled from your earlier correction.');
+  }
+
+  // OCR with progress into the status block whose ids start with `prefix`
+  // ('' for review, 'cs-' for the copy steps). apply(parsed) fills the fields.
+  async function runOcr(source, prefix, apply) {
     const job = ++state.ocrJob;
-    const status = $('ocr-status'), label = $('ocr-label'), pct = $('ocr-pct'), bar = $('ocr-bar');
-    const source = state.review && state.review.ocrCanvas;
+    const status = $(prefix + 'ocr-status'), label = $(prefix + 'ocr-label'), pct = $(prefix + 'ocr-pct'), bar = $(prefix + 'ocr-bar');
     if (!source) return;
     status.hidden = false; label.textContent = ocr.worker ? 'Reading the card text…' : 'Loading the text recognizer (first time only)…';
     pct.textContent = ''; bar.style.width = '0%';
@@ -984,18 +1193,13 @@
     try {
       const parsed = await ocr.read(source, onProgress);
       if (job !== state.ocrJob) return;
-      state.review.ocrCanvas = null;
       bar.style.width = '100%'; pct.textContent = '';
       if (!parsed.name && !parsed.typeLine && !parsed.rulesText) {
         label.textContent = 'No text found. Type the card details below.';
         return;
       }
+      await apply(parsed);
       label.textContent = 'Text read. Check it and fix anything that is off.';
-      const correction = parsed.name ? await repo.correctionFor(state.game, parsed.name) : null;
-      if (!$('f-name').value.trim()) $('f-name').value = (correction && correction.name) || parsed.name;
-      if (!$('f-type').value.trim()) $('f-type').value = (correction && correction.typeLine) || parsed.typeLine;
-      if (!$('f-rules').value.trim()) $('f-rules').value = (correction && correction.rulesText) || parsed.rulesText;
-      if (correction) toast('Filled from your earlier correction.');
     } catch (e) {
       if (job !== state.ocrJob) return;
       bar.style.width = '0%'; pct.textContent = '';
@@ -1010,6 +1214,7 @@
     if (!correction) return;
     if (!$('f-type').value.trim()) $('f-type').value = correction.typeLine || '';
     if (!$('f-rules').value.trim()) $('f-rules').value = correction.rulesText || '';
+    if (!$('f-pt').value.trim()) $('f-pt').value = correction.pt || '';
   });
 
   $('btn-retake').addEventListener('click', () => {
@@ -1024,9 +1229,9 @@
     state.ocrJob++;
     try {
       const pngBytes = await canvasToPngBytes(reviewCanvas());
-      const name = $('f-name').value, typeLine = $('f-type').value, rulesText = $('f-rules').value;
-      const record = await repo.save({ game: state.game, name, typeLine, rulesText, pngBytes });
-      await repo.saveCorrection(state.game, record.name, { name: record.name, typeLine: record.typeLine, rulesText: record.rulesText });
+      const name = $('f-name').value, typeLine = $('f-type').value, rulesText = $('f-rules').value, pt = $('f-pt').value;
+      const record = await repo.save({ game: state.game, name, typeLine, rulesText, pt, pngBytes });
+      await repo.saveCorrection(state.game, record.name, { name: record.name, typeLine: record.typeLine, rulesText: record.rulesText, pt: record.pt });
       state.review = null;
       toast(store.mode === 'memory' ? 'Saved for this visit only. This browser blocks storage.' : 'Saved.');
       openFinal(record);
@@ -1051,8 +1256,8 @@
     renderFinalImage();
     const meta = $('final-meta');
     meta.replaceChildren();
-    const pairs = [['Name', record.name], ['Type', record.typeLine], ['Game text', record.rulesText]];
-    if (record.isCopy) pairs.push(['Copied by', record.sourceCardName || '—']);
+    const pairs = [['Name', record.name], ['Type', record.typeLine], ['P/T', record.pt], ['Game text', record.rulesText]];
+    if (record.isCopy) pairs.push(['Copied by', record.sourceCardName || '—'], ['Copy of', record.copiedCardName]);
     pairs.push(['Saved', formatDate(record.createdAt)]);
     for (const [k, v] of pairs) {
       if (!v) continue;
@@ -1105,9 +1310,75 @@
     openLibrary(state.game);
   });
 
-  // Copy card
+  // Copy card: 1) scan the copying card, 2) scan the card being copied, 3) review the merge.
+  const COPY_STEPS = {
+    1: { side: 'copier', title: 'Scan the copying card', hint: 'The card whose text makes it a copy of another card.' },
+    2: { side: 'target', title: 'Scan the card being copied', hint: 'Its name, type line, game text and P/T are the starting point.' },
+  };
+  const blankCard = () => ({ name: '', typeLine: '', rulesText: '', pt: '' });
+  const CS_FIELDS = { name: 'cs-name', typeLine: 'cs-type', rulesText: 'cs-rules', pt: 'cs-pt' };
+
+  function readCopyStep() {
+    const card = state.copy[COPY_STEPS[state.copy.step].side];
+    for (const [key, id] of Object.entries(CS_FIELDS)) card[key] = $(id).value;
+  }
+
+  function openCopyStep(step) {
+    state.copy.step = step;
+    const { side, title, hint } = COPY_STEPS[step];
+    const card = state.copy[side];
+    $('cs-step').textContent = `Step ${step} of 3`;
+    $('cs-title').textContent = title;
+    $('cs-hint').textContent = hint;
+    for (const [key, id] of Object.entries(CS_FIELDS)) $(id).value = card[key];
+    $('cs-type-field').hidden = $('cs-pt-field').hidden = side === 'copier';
+    $('btn-cs-scan').lastChild.textContent = card.name || card.rulesText ? ' Scan again' : ' Scan card';
+    show('copystep', 'Copy card');
+  }
+
+  $('btn-copy').addEventListener('click', () => {
+    state.copy = { step: 1, copier: blankCard(), target: blankCard(), scanning: false };
+    $('cs-ocr-status').hidden = true;
+    openCopyStep(1);
+  });
+  $('btn-cs-scan').addEventListener('click', () => {
+    readCopyStep();
+    state.copy.scanning = true;
+    $('sheet').hidden = false; $('btn-sheet-continue').focus();
+  });
+
+  function copyScanned(source) {
+    const copy = state.copy;
+    copy.scanning = false;
+    copy[COPY_STEPS[copy.step].side] = blankCard();
+    openCopyStep(copy.step);
+    let ocrSource;
+    try { ocrSource = prepareForOcr(detectCard(source) || source); } catch (e) { toast('That photo could not be processed.'); return; }
+    const step = copy.step;
+    runOcr(ocrSource, 'cs-', parsed => {
+      if (state.copy !== copy || copy.step !== step || state.screen !== 'copystep') return;
+      return fillFields(parsed, CS_FIELDS);
+    });
+  }
+
+  $('btn-cs-cancel').addEventListener('click', () => openLibrary(state.game));
+  $('btn-cs-next').addEventListener('click', async () => {
+    state.ocrJob++;
+    readCopyStep();
+    $('cs-ocr-status').hidden = true;
+    if (state.copy.step === 1) { openCopyStep(2); return; }
+    const { copier, target } = state.copy;
+    const merged = mergeCopy(copier, target);
+    $('c-title').value = merged.name; $('c-type').value = merged.typeLine;
+    $('c-rules').value = merged.rulesText; $('c-pt').value = merged.pt;
+    $('c-source').value = copier.name.trim(); $('c-target').value = target.name.trim();
+    $('copy-notes').hidden = !merged.notes;
+    show('copy', 'Copy card');
+    renderCopyPreview();
+  });
+
   function copyDraft() {
-    return { title: $('c-title').value, typeLine: $('c-type').value, rulesText: $('c-rules').value, sourceCardName: $('c-source').value };
+    return { title: $('c-title').value, typeLine: $('c-type').value, rulesText: $('c-rules').value, pt: $('c-pt').value, sourceCardName: $('c-source').value };
   }
   let copyTimer;
   function renderCopyPreview() {
@@ -1117,16 +1388,7 @@
       $('copy-canvas').getContext('2d').drawImage(c, 0, 0);
     }, 120);
   }
-  for (const id of ['c-title', 'c-type', 'c-rules', 'c-source']) $(id).addEventListener('input', renderCopyPreview);
-
-  $('btn-copy').addEventListener('click', async () => {
-    $('c-title').value = ''; $('c-type').value = ''; $('c-rules').value = ''; $('c-source').value = '';
-    const dl = $('saved-names'); dl.replaceChildren();
-    for (const r of await repo.all(state.game)) { const o = document.createElement('option'); o.value = r.name; dl.append(o); }
-    show('copy', 'Copy card');
-    renderCopyPreview();
-    $('c-title').focus();
-  });
+  for (const id of ['c-title', 'c-type', 'c-rules', 'c-pt', 'c-source']) $(id).addEventListener('input', renderCopyPreview);
   $('btn-copy-cancel').addEventListener('click', () => openLibrary(state.game));
   $('btn-copy-save').addEventListener('click', async () => {
     const btn = $('btn-copy-save'); btn.disabled = true;
@@ -1136,9 +1398,10 @@
       const c = buildTextCard(draft);
       const pngBytes = await canvasToPngBytes(c);
       const record = await repo.save({
-        game: state.game, name: draft.title || 'Copied card', typeLine: draft.typeLine, rulesText: draft.rulesText,
-        pngBytes, isCopy: true, sourceCardName: draft.sourceCardName.trim() || null,
+        game: state.game, name: draft.title || 'Copied card', typeLine: draft.typeLine, rulesText: draft.rulesText, pt: draft.pt,
+        pngBytes, isCopy: true, sourceCardName: draft.sourceCardName.trim() || null, copiedCardName: $('c-target').value.trim() || null,
       });
+      state.copy = null;
       toast('Saved.');
       openFinal(record);
     } catch (e) {
@@ -1169,9 +1432,18 @@
   $('btn-back').addEventListener('click', () => {
     switch (state.screen) {
       case 'library': show('home'); break;
-      case 'camera': openLibrary(state.game); break;
+      case 'camera':
+        if (state.copy && state.copy.scanning) { state.copy.scanning = false; openCopyStep(state.copy.step); }
+        else openLibrary(state.game);
+        break;
       case 'review': state.ocrJob++; state.review = null; openLibrary(state.game); break;
-      case 'final': case 'copy': openLibrary(state.game); break;
+      case 'copystep':
+        state.ocrJob++;
+        if (state.copy && state.copy.step === 2) { readCopyStep(); $('cs-ocr-status').hidden = true; openCopyStep(1); }
+        else openLibrary(state.game);
+        break;
+      case 'copy': if (state.copy) openCopyStep(2); else openLibrary(state.game); break;
+      case 'final': openLibrary(state.game); break;
       case 'settings': {
         const prev = state.history.pop() || 'home';
         if (prev === 'home') show('home');
@@ -1195,5 +1467,5 @@
   }
 
   // Exposed for the verification script only.
-  window.__cardDisplay = { ditherFourColors, snapToPalette, buildTextCard, preparePhoto, prepareForOcr, detectCard, findCardQuad, trimBorder, fitToCard, inspectImage, parseOcrText, ocr, repo, store, transfer, PALETTE, APP_VERSION };
+  window.__cardDisplay = { ditherFourColors, snapToPalette, buildTextCard, preparePhoto, prepareForOcr, detectCard, findCardQuad, trimBorder, fitToCard, mergeCopy, mergeDraft, copyPatterns, exceptClause, inspectImage, parseOcrText, ocr, repo, store, transfer, PALETTE, APP_VERSION };
 })();

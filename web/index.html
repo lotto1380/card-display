@@ -137,6 +137,10 @@
       <label for="f-rules">Game text</label>
       <textarea id="f-rules" placeholder="Rules text, as printed"></textarea>
     </div>
+    <div class="field">
+      <label for="f-pt">P/T (optional)</label>
+      <input id="f-pt" type="text" autocomplete="off" inputmode="numeric" placeholder="2/2">
+    </div>
     <div class="actions pair">
       <button class="btn" id="btn-retake" type="button">Retake</button>
       <button class="btn primary" id="btn-confirm" type="button">Confirm &amp; save</button>
@@ -177,23 +181,55 @@
     </div>
   </section>
 
-  <!-- COPY CARD -->
+  <!-- COPY CARD: steps 1 and 2 (scan each card) -->
+  <section id="screen-copystep" class="col" hidden>
+    <div>
+      <p class="eyebrow" id="cs-step">Step 1 of 3</p>
+      <h2 id="cs-title">Scan the copying card</h2>
+      <p class="muted small" id="cs-hint"></p>
+    </div>
+    <button class="btn primary block" id="btn-cs-scan" type="button">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/></svg> Scan card</button>
+    <div class="ocr" id="cs-ocr-status" hidden>
+      <div class="ocr-line"><span id="cs-ocr-label">Reading the card text…</span><span class="mono" id="cs-ocr-pct"></span></div>
+      <div class="progress"><div id="cs-ocr-bar"></div></div>
+    </div>
+    <div class="field">
+      <label for="cs-name">Card name</label>
+      <input id="cs-name" type="text" autocomplete="off" placeholder="As printed on the card">
+    </div>
+    <div class="field" id="cs-type-field">
+      <label for="cs-type">Type line</label>
+      <input id="cs-type" type="text" autocomplete="off" placeholder="Creature — Goblin">
+    </div>
+    <div class="field">
+      <label for="cs-rules">Game text</label>
+      <textarea id="cs-rules" placeholder="Rules text, as printed"></textarea>
+    </div>
+    <div class="field" id="cs-pt-field">
+      <label for="cs-pt">P/T (optional)</label>
+      <input id="cs-pt" type="text" autocomplete="off" inputmode="numeric" placeholder="2/2">
+    </div>
+    <div class="actions pair">
+      <button class="btn" id="btn-cs-cancel" type="button">Cancel</button>
+      <button class="btn primary" id="btn-cs-next" type="button">Next</button>
+    </div>
+  </section>
+
+  <!-- COPY CARD: step 3 (review the merged result) -->
   <section id="screen-copy" class="col" hidden>
     <div>
-      <h2>Copy card</h2>
+      <p class="eyebrow">Step 3 of 3</p>
+      <h2>Review the copy</h2>
       <p class="muted small">Text only, no artwork. Edits appear directly on the image.</p>
     </div>
     <div class="preview-wrap">
       <canvas class="preview" id="copy-canvas" width="300" height="400" aria-label="Copy card preview"></canvas>
     </div>
+    <p class="warn" id="copy-notes" hidden>Part of the copy instruction was not recognized. It is at the end of the game text as “Except: …”. Edit it as needed.</p>
     <div class="field">
-      <label for="c-title">Title</label>
+      <label for="c-title">Name</label>
       <input id="c-title" type="text" autocomplete="off" placeholder="Copied card">
-    </div>
-    <div class="field">
-      <label for="c-source">Copying card (optional)</label>
-      <input id="c-source" type="text" autocomplete="off" list="saved-names" placeholder="Name of the card doing the copying">
-      <datalist id="saved-names"></datalist>
     </div>
     <div class="field">
       <label for="c-type">Type line</label>
@@ -202,6 +238,18 @@
     <div class="field">
       <label for="c-rules">Game text</label>
       <textarea id="c-rules" placeholder="Rules text"></textarea>
+    </div>
+    <div class="field">
+      <label for="c-pt">P/T (optional)</label>
+      <input id="c-pt" type="text" autocomplete="off" placeholder="2/2">
+    </div>
+    <div class="field">
+      <label for="c-source">Copying card</label>
+      <input id="c-source" type="text" autocomplete="off" placeholder="Name of the card doing the copying">
+    </div>
+    <div class="field">
+      <label for="c-target">Card being copied</label>
+      <input id="c-target" type="text" autocomplete="off" placeholder="Name of the copied card">
     </div>
     <div class="actions pair">
       <button class="btn" id="btn-copy-cancel" type="button">Cancel</button>

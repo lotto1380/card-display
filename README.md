@@ -30,9 +30,9 @@ Features: game pick (MTG / SWU / Other), live camera with a 3:4 alignment frame
 (camera-app and photo-library fallbacks), auto-crop (find the card, straighten it,
 trim a black border), glare and blur warnings, on-device OCR
 (Tesseract.js, English, vendored so it works offline), editable name / type /
-game text, correction memory keyed by card name, encrypted local library
-(IndexedDB + AES-GCM, non-extractable key), search and recents, text-only Copy
-Card builder, Send-to-app (Web Share) and Download export, rotate for landscape,
+game text / P/T, correction memory keyed by card name, encrypted local library
+(IndexedDB + AES-GCM, non-extractable key), search and recents, two-photo text-only
+Copy Card, Send-to-app (Web Share) and Download export, rotate for landscape,
 installable PWA with offline support.
 
 ### Photo pipeline
@@ -56,6 +56,24 @@ If no card is found, the photo is center-cropped as before. The review screen ha
 **Crop: Auto / Full frame** control; Auto is the default when a card was found.
 OCR reads the straightened card when there is one. Detection is written from
 scratch (no OpenCV). The Flutter app still center-crops.
+
+### Copy card from two photos
+
+**Copy card** in the library is a three-step flow:
+
+1. Scan the copying card (camera + sleeve sheet, OCR, editable name and game text).
+2. Scan the card being copied (editable name, type line, game text, P/T).
+3. Review: `mergeCopy(copier, target)` starts from the copied card and applies the
+   copier's "copy of … except …" clause: added subtypes or card types, legendary
+   added or removed, quoted abilities, keywords, +N/+N or +1/+1 counters (shown as
+   "2/2 (+1/+1)"), a new name, a color. Anything it does not recognize is appended
+   as "Except: …" so nothing is lost. Every field stays editable, with a live
+   text-only preview.
+
+Saved copies have `isCopy: true`, `sourceCardName` (the copier) and
+`copiedCardName` (the target). Any card can carry `pt`, read from a line such as
+`2/2` by OCR, shown on the final screen and in the bottom-right of a text card.
+These are optional record fields, so the IndexedDB version is unchanged.
 
 ### Run locally
 

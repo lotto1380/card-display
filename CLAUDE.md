@@ -53,6 +53,11 @@ cd web && npm run icons                 # regenerate icons/ with headless Chromi
   the center crop as fallback and as the review screen's "Full frame" option. The
   detector is from scratch (no OpenCV); its thresholds are in `DETECT` / `TRIM`.
   Only the web app does this; mobile still center-crops.
+- Copy Card is two scans plus a review (`copystep` screen for steps 1–2, `copy` for
+  step 3). `mergeCopy` applies the except clause through `copyPatterns`, one small
+  function per pattern, each unit-tested; unrecognized text goes to `notes`.
+- Card records carry optional `pt` and `copiedCardName` (0.4.0). Optional fields
+  need no IDB version bump; changing the shape of existing fields does.
 - Keep it one `app.js`; sections are marked with banner comments. Add a module
   only if a section passes ~300 lines.
 - Screens are `<section id="screen-*">` toggled with the `hidden` attribute via
