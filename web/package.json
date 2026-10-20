@@ -1,6 +1,6 @@
 {
   "name": "card-display-web",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "description": "Card Display web app: photograph a card, make a 300×400 four-color image, send it to an e-paper display.",
   "type": "module",

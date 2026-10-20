@@ -18,7 +18,8 @@ runs on the device.
 
 - Portrait **300 × 400**, opaque RGB PNG.
 - Only four exact colors: black `(0,0,0)`, white `(255,255,255)`, red `(255,0,0)`, yellow `(255,255,0)`.
-- Photos: center-crop to 3:4, resize, Floyd–Steinberg error diffusion to the palette.
+- Photos: detect the card → straighten → trim black border → cover-fit 3:4 (fallback:
+  center-crop) → resize → Floyd–Steinberg dither.
 - Copy Card (text only): rendered, then every pixel snapped to the nearest palette color.
 - Optional rotated export, 400 × 300, for a landscape display.
 
@@ -38,7 +39,7 @@ offline support.
 
 ### Photo pipeline
 
-`preparePhoto` in `app.js` runs **detect → trim → fit → dither**:
+`preparePhoto` in `pipeline.js` runs **detect → trim → fit → dither**:
 
 1. `detectCard` downscales to ~480 px, takes the median color of the outer 4% as
    the background, masks pixels that differ from it, cleans the mask (3×3 open and

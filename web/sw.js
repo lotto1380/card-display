@@ -1,7 +1,7 @@
 /* Card Display service worker: the app shell is precached; the text-recognition
    files are cached the first time they are used, so later scans work offline. */
-const VERSION = 'card-display-v0.4.0';
-const SHELL = ['./', './index.html', './styles.css', './app.js', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png'];
+const VERSION = 'card-display-v0.4.1';
+const SHELL = ['./', './index.html', './styles.css', './pipeline.js', './ocr.js', './storage.js', './app.js', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png'];
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(VERSION).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));

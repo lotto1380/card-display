@@ -19,18 +19,23 @@ put it on a Santek EZ Sign e-paper display. Two apps, one output contract.
 
 - Portrait 300 × 400, opaque RGB PNG.
 - Only four exact colors: (0,0,0), (255,255,255), (255,0,0), (255,255,0).
-- Photos: center-crop to 3:4, resize, Floyd–Steinberg error diffusion to the
-  palette (weights 7/16, 3/16, 5/16, 1/16; nearest color by 0.30/0.59/0.11
+- Photos: detect the card → straighten → trim black border → cover-fit 3:4
+  (fallback: center-crop) → resize → Floyd–Steinberg dither to the palette (weights 7/16, 3/16, 5/16, 1/16; nearest color by 0.30/0.59/0.11
   weighted squared distance; clamp 0–255 before quantizing; row-major scan).
 - Copy Card (text only): rendered, then every pixel snapped to nearest palette color.
 - Optional rotated export 400 × 300 for a landscape display.
-- `web/app.js` `ditherFourColors` and `mobile/lib/src/services/image_processor.dart`
+- `web/pipeline.js` `ditherFourColors` and `mobile/lib/src/services/image_processor.dart`
   `_ditherToFourColors` must stay equivalent. Change one, change both.
 
 ## Layout
 
 - `web/` — the web app. Vanilla HTML/CSS/JS, no build step, no framework.
-  `index.html`, `styles.css`, `app.js`, `sw.js`, `manifest.webmanifest`,
+  `index.html`, `styles.css`, four plain scripts loaded in this order (no
+  bundler, no modules, each an IIFE that sets one namespace on `window`):
+  `pipeline.js` (`CDPipeline`: dither, detect, trim, fit, OCR image prep, text
+  card), `ocr.js` (`CDOcr`: Tesseract wrapper, `parseOcrText`, `mergeCopy`),
+  `storage.js` (`CDStorage`: IndexedDB, crypto, `repo`), `app.js` (UI only),
+  then `sw.js`, `manifest.webmanifest`,
   `vendor/` (Tesseract.js 6.0.1 + LSTM cores + English model, vendored so OCR
   works offline), `test/verify.mjs` (Playwright, headless Chromium).
 - `mobile/` — Flutter app v0.2.0 (Android + iOS). See `mobile/README.md`.
@@ -39,7 +44,7 @@ put it on a Santek EZ Sign e-paper display. Two apps, one output contract.
 ## Commands
 
 ```sh
-cd web && npm install && npm test      # 56 checks: contract, auto-crop, storage, OCR parse, copy merge, live OCR, UI flows
+cd web && npm install && npm test      # 68 checks: contract, auto-crop, storage, OCR parse + P/T, copy merge, live OCR, UI flows
 cd web && npm run serve                 # http://localhost:8080
 cd web && npm run icons                 # regenerate icons/ with headless Chromium
 ```
@@ -63,8 +68,10 @@ cd web && npm run icons                 # regenerate icons/ with headless Chromi
   the session (not pixelated); the final preview stays pixelated, as on the badge.
   Rotate 90° defaults to on (landscape badge); the user's choice is remembered in
   localStorage (`card_display.rotate`) and overrides that.
-- Keep it one `app.js`; sections are marked with banner comments. Add a module
-  only if a section passes ~300 lines.
+- Sections inside each script are marked with banner comments. A new script must
+  be added to `index.html` (in dependency order) and to `SHELL` in `sw.js`.
+  `app.js` reads other scripts only through their namespaces, destructured at
+  its top.
 - Screens are `<section id="screen-*">` toggled with the `hidden` attribute via
   `show()`. New screens: add the id to the `screens` array.
 - Export goes through the `transfer` adapters (`share`, `download`). `transfer.nfc`
