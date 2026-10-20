@@ -112,6 +112,14 @@
         <span class="mono">300 × 400</span>
         <span>This is what the display will show.</span>
       </div>
+      <div class="seg">
+        <span id="crop-label">Crop</span>
+        <div class="seg-group" role="group" aria-labelledby="crop-label">
+          <button type="button" id="btn-crop-auto" data-crop="auto" aria-pressed="true">Auto</button>
+          <button type="button" id="btn-crop-full" data-crop="full" aria-pressed="false">Full frame</button>
+        </div>
+      </div>
+      <p class="small muted center" id="crop-note"></p>
     </div>
     <div class="ocr" id="ocr-status" hidden>
       <div class="ocr-line"><span id="ocr-label">Reading the card text…</span><span class="mono" id="ocr-pct"></span></div>

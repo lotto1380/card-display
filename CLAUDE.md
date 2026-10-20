@@ -49,6 +49,10 @@ cd web && npm run icons                 # regenerate icons/ with headless Chromi
 
 ## Web app conventions
 
+- Photo pipeline: `detectCard` → `trimBorder` → `fitToCard` → resize + dither, with
+  the center crop as fallback and as the review screen's "Full frame" option. The
+  detector is from scratch (no OpenCV); its thresholds are in `DETECT` / `TRIM`.
+  Only the web app does this; mobile still center-crops.
 - Keep it one `app.js`; sections are marked with banner comments. Add a module
   only if a section passes ~300 lines.
 - Screens are `<section id="screen-*">` toggled with the `hidden` attribute via

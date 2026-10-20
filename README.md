@@ -27,12 +27,35 @@ Both apps' tests assert this contract on their outputs.
 ## Web app (`web/`)
 
 Features: game pick (MTG / SWU / Other), live camera with a 3:4 alignment frame
-(camera-app and photo-library fallbacks), glare and blur warnings, on-device OCR
+(camera-app and photo-library fallbacks), auto-crop (find the card, straighten it,
+trim a black border), glare and blur warnings, on-device OCR
 (Tesseract.js, English, vendored so it works offline), editable name / type /
 game text, correction memory keyed by card name, encrypted local library
 (IndexedDB + AES-GCM, non-extractable key), search and recents, text-only Copy
 Card builder, Send-to-app (Web Share) and Download export, rotate for landscape,
 installable PWA with offline support.
+
+### Photo pipeline
+
+`preparePhoto` in `app.js` runs **detect → trim → fit → dither**:
+
+1. `detectCard` downscales to ~480 px, takes the median color of the outer 4% as
+   the background, masks pixels that differ from it, cleans the mask (3×3 open and
+   close), and keeps the largest connected component. Its corners are the extremes
+   of x+y and x−y. It is accepted only if it is at least 15% of the frame, does not
+   touch the frame edge, is convex, and is portrait with a long/short ratio between
+   1.15 and 1.65. The photo is then perspective-warped to a straight 900 × 1200 card.
+2. `trimBorder` removes a solid dark frame (rows/columns ≥ 92% with luminance < 64),
+   at most 12% per side, nothing if under 1.5% (borderless cards), and gives back a
+   1.5% margin so art that bleeds into the frame is kept.
+3. `fitToCard` crops the long axis to 3:4 by at most 4%; any remaining mismatch is
+   letterboxed in white, never stretched.
+4. Resize to 300 × 400 and Floyd–Steinberg dither (unchanged).
+
+If no card is found, the photo is center-cropped as before. The review screen has a
+**Crop: Auto / Full frame** control; Auto is the default when a card was found.
+OCR reads the straightened card when there is one. Detection is written from
+scratch (no OpenCV). The Flutter app still center-crops.
 
 ### Run locally
 

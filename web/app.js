@@ -135,13 +135,261 @@
     return { highlightRatio, detailScore, warnings };
   }
 
-  // Port of ImageProcessor.preparePhoto: center-crop to 3:4, resize to 300×400, dither.
-  function preparePhoto(img) {
-    const r = cropRect(img);
+  // ---------------------------------------------------------------------------
+  // Auto-crop: find the card against its background, straighten it, trim a
+  // solid black border, fit to 3:4. From scratch, no OpenCV.
+  // ---------------------------------------------------------------------------
+  const CARD_W = 900, CARD_H = 1200;
+  const DETECT = { width: 480, ring: 0.04, threshold: 40, minArea: 0.15, minRatio: 1.15, maxRatio: 1.65 };
+  const TRIM = { dark: 64, share: 0.92, slack: 0.01, min: 0.015, max: 0.12, margin: 0.015 };
+  const FIT_MAX_CROP = 0.04;
+
+  const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+
+  function median(values) {
+    values.sort((a, b) => a - b);
+    return values[values.length >> 1];
+  }
+
+  // 3×3 erode (AND) or dilate (OR) on a 0/1 mask, as two separable passes.
+  function morph(mask, w, h, dilate) {
+    const tmp = new Uint8Array(w * h), out = new Uint8Array(w * h);
+    const pick = dilate ? (a, b, c) => a | b | c : (a, b, c) => a & b & c;
+    for (let y = 0, i = 0; y < h; y++) {
+      for (let x = 0; x < w; x++, i++) tmp[i] = pick(mask[x > 0 ? i - 1 : i], mask[i], mask[x < w - 1 ? i + 1 : i]);
+    }
+    for (let y = 0, i = 0; y < h; y++) {
+      for (let x = 0; x < w; x++, i++) out[i] = pick(tmp[y > 0 ? i - w : i], tmp[i], tmp[y < h - 1 ? i + w : i]);
+    }
+    return out;
+  }
+
+  // Largest 4-connected component: a label map and the winning label.
+  function largestComponent(mask, w, h) {
+    const n = w * h, labels = new Int32Array(n), queue = new Int32Array(n);
+    let best = 0, bestSize = 0, next = 0;
+    for (let s = 0; s < n; s++) {
+      if (!mask[s] || labels[s]) continue;
+      next++;
+      let head = 0, tail = 0;
+      queue[tail++] = s; labels[s] = next;
+      while (head < tail) {
+        const i = queue[head++], x = i % w;
+        if (x > 0 && mask[i - 1] && !labels[i - 1]) { labels[i - 1] = next; queue[tail++] = i - 1; }
+        if (x < w - 1 && mask[i + 1] && !labels[i + 1]) { labels[i + 1] = next; queue[tail++] = i + 1; }
+        if (i >= w && mask[i - w] && !labels[i - w]) { labels[i - w] = next; queue[tail++] = i - w; }
+        if (i + w < n && mask[i + w] && !labels[i + w]) { labels[i + w] = next; queue[tail++] = i + w; }
+      }
+      if (tail > bestSize) { bestSize = tail; best = next; }
+    }
+    return { labels, label: best, size: bestSize };
+  }
+
+  // Component area with its holes filled: everything not reachable from the image edge.
+  function filledArea(labels, label, w, h) {
+    const n = w * h, seen = new Uint8Array(n), queue = new Int32Array(n);
+    let tail = 0;
+    const push = i => { if (!seen[i] && labels[i] !== label) { seen[i] = 1; queue[tail++] = i; } };
+    for (let x = 0; x < w; x++) { push(x); push((h - 1) * w + x); }
+    for (let y = 0; y < h; y++) { push(y * w); push(y * w + w - 1); }
+    for (let head = 0; head < tail; head++) {
+      const i = queue[head], x = i % w;
+      if (x > 0) push(i - 1);
+      if (x < w - 1) push(i + 1);
+      if (i >= w) push(i - w);
+      if (i + w < n) push(i + w);
+    }
+    return n - tail;
+  }
+
+  function isConvex(q) {
+    let sign = 0;
+    for (let i = 0; i < 4; i++) {
+      const a = q[i], b = q[(i + 1) % 4], c = q[(i + 2) % 4];
+      const cross = Math.sign((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]));
+      if (!cross || (sign && cross !== sign)) return false;
+      sign = cross;
+    }
+    return true;
+  }
+
+  // Corners [tl, tr, br, bl] of the card in source pixels, or null.
+  function findCardQuad(img) {
+    const { w: iw, h: ih } = sourceSize(img);
+    const w = Math.min(DETECT.width, iw), h = Math.max(2, Math.round(ih * (w / iw)));
+    const d = drawScaled(img, 0, 0, iw, ih, w, h).getContext('2d').getImageData(0, 0, w, h).data;
+    const rx = Math.max(1, Math.round(w * DETECT.ring)), ry = Math.max(1, Math.round(h * DETECT.ring));
+    const rs = [], gs = [], bs = [];
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (x >= rx && x < w - rx && y >= ry && y < h - ry) continue;
+        const p = (y * w + x) * 4;
+        rs.push(d[p]); gs.push(d[p + 1]); bs.push(d[p + 2]);
+      }
+    }
+    const br = median(rs), bg = median(gs), bb = median(bs);
+    const t2 = DETECT.threshold * DETECT.threshold;
+    let mask = new Uint8Array(w * h);
+    for (let i = 0, p = 0; i < mask.length; i++, p += 4) {
+      const dr = d[p] - br, dg = d[p + 1] - bg, db = d[p + 2] - bb;
+      mask[i] = 0.30 * dr * dr + 0.59 * dg * dg + 0.11 * db * db > t2 ? 1 : 0;
+    }
+    mask = morph(morph(mask, w, h, false), w, h, true); // open
+    mask = morph(morph(mask, w, h, true), w, h, false); // close
+    const { labels, label, size } = largestComponent(mask, w, h);
+    if (!size) return null;
+    let tl, tr, brc, bl, minSum = Infinity, maxSum = -Infinity, minDiff = Infinity, maxDiff = -Infinity;
+    for (let i = 0; i < labels.length; i++) {
+      if (labels[i] !== label) continue;
+      const x = i % w, y = (i - x) / w;
+      // A component cut off by the frame has no trustworthy corners.
+      if (x === 0 || y === 0 || x === w - 1 || y === h - 1) return null;
+      if (x + y < minSum) { minSum = x + y; tl = [x, y]; }
+      if (x + y > maxSum) { maxSum = x + y; brc = [x, y]; }
+      if (x - y > maxDiff) { maxDiff = x - y; tr = [x, y]; }
+      if (x - y < minDiff) { minDiff = x - y; bl = [x, y]; }
+    }
+    if (filledArea(labels, label, w, h) < DETECT.minArea * w * h) return null;
+    const quad = [tl, tr, brc, bl];
+    if (!isConvex(quad)) return null;
+    // Portrait only: the output is portrait, and a landscape blob inside a
+    // full-frame card is usually its art box.
+    const ratio = (dist(tl, bl) + dist(tr, brc)) / (dist(tl, tr) + dist(bl, brc));
+    if (!(ratio >= DETECT.minRatio && ratio <= DETECT.maxRatio)) return null;
+    return quad.map(([x, y]) => [(x + 0.5) * (iw / w), (y + 0.5) * (ih / h)]);
+  }
+
+  // Homography taking the w×h rectangle onto quad [tl, tr, br, bl] (8×8 Gaussian elimination).
+  function rectToQuad(w, h, quad) {
+    const rect = [[0, 0], [w, 0], [w, h], [0, h]];
+    const A = [], b = [];
+    for (let i = 0; i < 4; i++) {
+      const [x, y] = rect[i], [u, v] = quad[i];
+      A.push([x, y, 1, 0, 0, 0, -u * x, -u * y]); b.push(u);
+      A.push([0, 0, 0, x, y, 1, -v * x, -v * y]); b.push(v);
+    }
+    for (let c = 0; c < 8; c++) {
+      let p = c;
+      for (let r = c + 1; r < 8; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
+      [A[c], A[p]] = [A[p], A[c]]; [b[c], b[p]] = [b[p], b[c]];
+      for (let r = c + 1; r < 8; r++) {
+        const f = A[r][c] / A[c][c];
+        for (let k = c; k < 8; k++) A[r][k] -= f * A[c][k];
+        b[r] -= f * b[c];
+      }
+    }
+    const m = new Array(8);
+    for (let r = 7; r >= 0; r--) {
+      let s = b[r];
+      for (let k = r + 1; k < 8; k++) s -= A[r][k] * m[k];
+      m[r] = s / A[r][r];
+    }
+    return m;
+  }
+
+  // Inverse-map every output pixel into the photo and sample bilinearly. The
+  // photo is first reduced so the card is at most ~2× the output size.
+  function warpQuad(img, quad, dw, dh) {
+    const { w: iw, h: ih } = sourceSize(img);
+    const s = Math.min(1, (2 * dh) / Math.max(dist(quad[0], quad[3]), dist(quad[1], quad[2])));
+    const sw = Math.max(1, Math.round(iw * s)), sh = Math.max(1, Math.round(ih * s));
+    let src;
+    if (s < 1) src = drawScaled(img, 0, 0, iw, ih, sw, sh);
+    else { src = makeCanvas(sw, sh); src.getContext('2d').drawImage(img, 0, 0); }
+    const sd = src.getContext('2d').getImageData(0, 0, sw, sh).data;
+    const m = rectToQuad(dw, dh, quad.map(([x, y]) => [x * (sw / iw), y * (sh / ih)]));
+    const out = makeCanvas(dw, dh), g = out.getContext('2d');
+    const id = g.createImageData(dw, dh), o = id.data;
+    for (let y = 0, p = 0; y < dh; y++) {
+      for (let x = 0; x < dw; x++, p += 4) {
+        const X = x + 0.5, Y = y + 0.5, z = m[6] * X + m[7] * Y + 1;
+        const u = Math.min(sw - 1, Math.max(0, (m[0] * X + m[1] * Y + m[2]) / z - 0.5));
+        const v = Math.min(sh - 1, Math.max(0, (m[3] * X + m[4] * Y + m[5]) / z - 0.5));
+        const x0 = Math.floor(u), y0 = Math.floor(v), x1 = Math.min(x0 + 1, sw - 1), y1 = Math.min(y0 + 1, sh - 1);
+        const fx = u - x0, fy = v - y0;
+        const p00 = (y0 * sw + x0) * 4, p10 = (y0 * sw + x1) * 4, p01 = (y1 * sw + x0) * 4, p11 = (y1 * sw + x1) * 4;
+        for (let c = 0; c < 3; c++) {
+          const top = sd[p00 + c] + (sd[p10 + c] - sd[p00 + c]) * fx;
+          const bottom = sd[p01 + c] + (sd[p11 + c] - sd[p01 + c]) * fx;
+          o[p + c] = top + (bottom - top) * fy;
+        }
+        o[p + 3] = 255;
+      }
+    }
+    g.putImageData(id, 0, 0);
+    return out;
+  }
+
+  // Straightened 900×1200 card canvas, or null when no card is found.
+  function detectCard(img) {
+    const quad = findCardQuad(img);
+    return quad ? warpQuad(img, quad, CARD_W, CARD_H) : null;
+  }
+
+  // Remove a solid dark frame. Each side scans inward (allowing ~1% of stray
+  // edge lines first), caps at 12%, skips anything under 1.5% (borderless
+  // cards), and gives 1.5% back so art that bleeds into the frame is kept.
+  function trimBorder(canvas) {
+    const w = canvas.width, h = canvas.height;
+    const d = canvas.getContext('2d').getImageData(0, 0, w, h).data;
+    const rowDark = new Uint32Array(h), colDark = new Uint32Array(w);
+    for (let y = 0, p = 0; y < h; y++) {
+      for (let x = 0; x < w; x++, p += 4) {
+        if (0.2126 * d[p] + 0.7152 * d[p + 1] + 0.0722 * d[p + 2] < TRIM.dark) { rowDark[y]++; colDark[x]++; }
+      }
+    }
+    const side = (n, across, darkAt) => {
+      const slack = Math.round(n * TRIM.slack), max = Math.round(n * TRIM.max);
+      const border = k => darkAt(k) >= TRIM.share * across;
+      let k = 0;
+      while (k <= slack && !border(k)) k++;
+      if (k > slack) return 0;
+      while (k < max && border(k)) k++;
+      if (k < n * TRIM.min) return 0;
+      return Math.max(0, k - Math.round(n * TRIM.margin));
+    };
+    const top = side(h, w, k => rowDark[k]), bottom = side(h, w, k => rowDark[h - 1 - k]);
+    const left = side(w, h, k => colDark[k]), right = side(w, h, k => colDark[w - 1 - k]);
+    if (!top && !bottom && !left && !right) return canvas;
+    const out = makeCanvas(w - left - right, h - top - bottom);
+    out.getContext('2d').drawImage(canvas, left, top, out.width, out.height, 0, 0, out.width, out.height);
+    return out;
+  }
+
+  // Cover-fit to 3:4 by cropping the long axis, at most 4%. Any mismatch left
+  // after that is letterboxed in white rather than stretched.
+  function fitToCard(canvas) {
+    const w = canvas.width, h = canvas.height, target = 3 / 4;
+    let cw = w, ch = h;
+    if (w / h > target) cw = Math.max(Math.round(h * target), Math.round(w * (1 - FIT_MAX_CROP)));
+    else ch = Math.max(Math.round(w / target), Math.round(h * (1 - FIT_MAX_CROP)));
+    const ow = Math.max(cw, Math.round(ch * target)), oh = Math.max(ch, Math.round(cw / target));
+    const out = makeCanvas(ow, oh), g = out.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0, 0, ow, oh);
+    g.drawImage(canvas, Math.floor((w - cw) / 2), Math.floor((h - ch) / 2), cw, ch, Math.floor((ow - cw) / 2), Math.floor((oh - ch) / 2), cw, ch);
+    return out;
+  }
+
+  function ditherRegion(img, r) {
     const c = drawScaled(img, r.x, r.y, r.w, r.h, W, H);
     const g = c.getContext('2d');
     g.putImageData(ditherFourColors(g.getImageData(0, 0, W, H)), 0, 0);
     return c;
+  }
+
+  // Photo → 300×400 palette image. crop 'auto': detect → trim → fit → dither,
+  // falling back to the center crop when no card is found. crop 'full': the
+  // center crop (port of ImageProcessor.preparePhoto). Pass `card` to reuse a
+  // detectCard result.
+  function preparePhoto(img, { crop = 'auto', card } = {}) {
+    if (crop === 'auto') {
+      const straight = card === undefined ? detectCard(img) : card;
+      if (straight) {
+        const fit = fitToCard(trimBorder(straight));
+        return ditherRegion(fit, { x: 0, y: 0, w: fit.width, h: fit.height });
+      }
+    }
+    return ditherRegion(img, cropRect(img));
   }
 
   // Grayscale, contrast-stretched crop at OCR-friendly resolution.
@@ -670,9 +918,12 @@
     toast('Processing photo…', 8000);
     try {
       const quality = inspectImage(source);
-      const processed = preparePhoto(source);
-      const ocrCanvas = prepareForOcr(source);
-      state.review = { canvas: processed, warnings: quality.warnings, ocrCanvas };
+      const card = detectCard(source);
+      // Both crops are made now so the original photo can be dropped right away.
+      const outputs = { full: preparePhoto(source, { crop: 'full' }), auto: card ? preparePhoto(source, { card }) : null };
+      // OCR reads the straightened card when there is one.
+      const ocrCanvas = prepareForOcr(card || source);
+      state.review = { outputs, crop: card ? 'auto' : 'full', warnings: quality.warnings, ocrCanvas };
       $('toast').hidden = true;
       openReview();
     } catch (e) {
@@ -680,8 +931,25 @@
     }
   }
 
+  function reviewCanvas() { return state.review.outputs[state.review.crop]; }
+
+  function drawReview() {
+    const { outputs, crop } = state.review;
+    for (const b of document.querySelectorAll('[data-crop]')) b.setAttribute('aria-pressed', String(b.dataset.crop === crop));
+    $('btn-crop-auto').disabled = !outputs.auto;
+    $('crop-note').textContent = outputs.auto ? 'Card found and straightened.' : 'No card edge found, so this is the full frame.';
+    $('review-canvas').getContext('2d').drawImage(reviewCanvas(), 0, 0);
+  }
+  for (const b of document.querySelectorAll('[data-crop]')) {
+    b.addEventListener('click', () => {
+      if (!state.review || b.disabled) return;
+      state.review.crop = b.dataset.crop;
+      drawReview();
+    });
+  }
+
   function openReview() {
-    const { canvas, warnings } = state.review;
+    const { warnings } = state.review;
     const warn = $('review-warn');
     if (warnings.length) {
       warn.replaceChildren();
@@ -690,7 +958,7 @@
       for (const w of warnings) { const p = document.createElement('p'); p.textContent = w; warn.append(p); }
       warn.hidden = false;
     } else warn.hidden = true;
-    $('review-canvas').getContext('2d').drawImage(canvas, 0, 0);
+    drawReview();
     $('f-name').value = ''; $('f-type').value = ''; $('f-rules').value = '';
     show('review', 'Review');
     runOcr();
@@ -755,7 +1023,7 @@
     const btn = $('btn-confirm'); btn.disabled = true;
     state.ocrJob++;
     try {
-      const pngBytes = await canvasToPngBytes(state.review.canvas);
+      const pngBytes = await canvasToPngBytes(reviewCanvas());
       const name = $('f-name').value, typeLine = $('f-type').value, rulesText = $('f-rules').value;
       const record = await repo.save({ game: state.game, name, typeLine, rulesText, pngBytes });
       await repo.saveCorrection(state.game, record.name, { name: record.name, typeLine: record.typeLine, rulesText: record.rulesText });
@@ -927,5 +1195,5 @@
   }
 
   // Exposed for the verification script only.
-  window.__cardDisplay = { ditherFourColors, snapToPalette, buildTextCard, preparePhoto, prepareForOcr, inspectImage, parseOcrText, ocr, repo, store, transfer, PALETTE, APP_VERSION };
+  window.__cardDisplay = { ditherFourColors, snapToPalette, buildTextCard, preparePhoto, prepareForOcr, detectCard, findCardQuad, trimBorder, fitToCard, inspectImage, parseOcrText, ocr, repo, store, transfer, PALETTE, APP_VERSION };
 })();

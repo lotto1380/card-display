@@ -164,6 +164,12 @@ p { margin: 0; }
   image-rendering: pixelated;
 }
 .preview.landscape { width: min(100%, 400px); aspect-ratio: 4 / 3; }
+.seg { display: flex; gap: 10px; align-items: center; justify-content: center; flex-wrap: wrap; font-size: 14px; font-weight: 600; }
+.seg-group { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--surface); }
+.seg-group button { min-height: 40px; padding: 8px 16px; border: 0; background: transparent; cursor: pointer; font-weight: 600; }
+.seg-group button + button { border-left: 1px solid var(--line); }
+.seg-group button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
+.seg-group button[disabled] { opacity: 0.45; cursor: not-allowed; }
 .contract { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
 
 .warn { display: grid; gap: 4px; padding: 12px 14px; border-radius: 12px; background: var(--warn-bg); color: var(--warn-fg); font-size: 14px; }

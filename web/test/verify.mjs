@@ -96,6 +96,84 @@ check('storage encrypted', core.storage.mode === 'encrypted', core.storage.mode)
 check('storage round trip', core.storage.saved === 1 && core.storage.sameLength && core.storage.header.join(',') === '137,80,78,71' && core.storage.afterDelete === 0);
 check('correction lookup normalizes names', core.storage.correctionOk);
 
+// Auto-crop on synthetic photos: a bordered card and a borderless card, each
+// rotated 7° with mild keystone on a wood-colored background, and a photo with
+// no card at all. Invented content only.
+await page.evaluate(() => {
+  const canvas = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+  window.__scenes = {
+    card(bordered) {
+      const c = canvas(700, 980), g = c.getContext('2d');
+      if (bordered) {
+        g.fillStyle = '#000'; g.fillRect(0, 0, 700, 980);
+        g.fillStyle = '#f2eee2'; g.fillRect(40, 40, 620, 900);
+      } else {
+        g.fillStyle = '#fff'; g.fillRect(0, 0, 700, 980);
+        g.strokeStyle = '#ff0'; g.lineWidth = 12; g.strokeRect(26, 26, 648, 928); // covers 20–32 px from each edge
+      }
+      g.fillStyle = '#7a8fa6'; g.fillRect(80, 150, 540, 400);
+      g.fillStyle = '#222'; g.font = 'bold 44px Arial'; g.fillText('Test Card', 80, 110);
+      g.font = '30px Arial'; g.fillText('Synthetic face for the crop test.', 80, 640);
+      return c;
+    },
+    scene(card) {
+      const c = canvas(1400, 1900), g = c.getContext('2d');
+      g.fillStyle = '#8a5a2e'; g.fillRect(0, 0, 1400, 1900);
+      for (let i = 0; i < 70; i++) {
+        g.fillStyle = i % 2 ? 'rgba(60, 35, 15, 0.12)' : 'rgba(255, 220, 180, 0.06)';
+        g.fillRect(0, (i * 977) % 1900, 1400, 3 + (i * 7) % 9);
+      }
+      if (card) {
+        const k = canvas(700, 980), kg = k.getContext('2d');
+        for (let y = 0; y < 980; y++) { const w = 700 * (0.94 + 0.06 * y / 979); kg.drawImage(card, 0, y, 700, 1, (700 - w) / 2, y, w, 1); }
+        g.translate(700, 950); g.rotate(7 * Math.PI / 180); g.drawImage(k, -350, -490);
+      }
+      return c;
+    },
+  };
+});
+const crop = await page.evaluate(() => {
+  const cd = window.__cardDisplay, S = window.__scenes;
+  const set = new Set(cd.PALETTE.map(c => c.join(',')));
+  const inPalette = c => { const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; for (let p = 0; p < d.length; p += 4) if (!set.has(`${d[p]},${d[p + 1]},${d[p + 2]}`)) return false; return true; };
+  const ok = c => c.width === 300 && c.height === 400 && inPalette(c);
+
+  const bordered = S.scene(S.card(true));
+  const bOut = cd.preparePhoto(bordered);
+  const bd = bOut.getContext('2d').getImageData(0, 0, 300, 400).data;
+  let sum = 0, count = 0;
+  for (let y = 0; y < 400; y++) for (let x = 0; x < 300; x++) {
+    if (x >= 9 && x < 291 && y >= 12 && y < 388) continue;
+    const p = (y * 300 + x) * 4; sum += 0.2126 * bd[p] + 0.7152 * bd[p + 1] + 0.0722 * bd[p + 2]; count++;
+  }
+
+  const borderless = S.scene(S.card(false));
+  const lOut = cd.preparePhoto(borderless);
+  const ld = lOut.getContext('2d').getImageData(0, 0, 300, 400).data;
+  const yellow = (x, y) => { const p = (y * 300 + x) * 4; return ld[p] === 255 && ld[p + 1] === 255 && ld[p + 2] === 0; };
+  const firstRow = order => { for (const y of order) { let n = 0; for (let x = 75; x < 225; x++) n += yellow(x, y); if (n > 75) return y; } return -1; };
+  const firstCol = order => { for (const x of order) { let n = 0; for (let y = 100; y < 300; y++) n += yellow(x, y); if (n > 100) return x; } return -1; };
+  const up = [...Array(400).keys()], across = [...Array(300).keys()];
+  const edges = { top: firstRow(up), bottom: 399 - firstRow([...up].reverse()), left: firstCol(across), right: 299 - firstCol([...across].reverse()) };
+  // Zero-trim position of the stroke's outer edge in the 300×400 output.
+  const expected = { top: 20 / 980 * 400, bottom: 20 / 980 * 400, left: 20 / 700 * 300, right: 20 / 700 * 300 };
+
+  const empty = S.scene(null);
+  return {
+    bordered: { found: !!cd.detectCard(bordered), ok: ok(bOut), ring: sum / count },
+    borderless: { found: !!cd.detectCard(borderless), ok: ok(lOut), edges, off: Object.keys(edges).map(k => Math.abs(edges[k] - expected[k])) },
+    empty: { found: cd.detectCard(empty) !== null, ok: ok(cd.preparePhoto(empty)) },
+  };
+});
+check('auto-crop finds a bordered card', crop.bordered.found);
+check('bordered card output is 300×400 palette-only', crop.bordered.ok);
+check('black border trimmed (outer ring luminance > 120)', crop.bordered.ring > 120, crop.bordered.ring.toFixed(1));
+check('auto-crop finds a borderless card', crop.borderless.found);
+check('borderless card output is 300×400 palette-only', crop.borderless.ok);
+check('borderless card keeps its edge on all four sides (±5 px)', crop.borderless.off.every(v => v <= 5), JSON.stringify(crop.borderless.edges));
+check('no card: detectCard returns null', !crop.empty.found);
+check('no card: fallback output is 300×400 palette-only', crop.empty.ok);
+
 // Live OCR with the vendored Tesseract files on a rendered card-like image.
 const ocrResult = await page.evaluate(async () => {
   const cd = window.__cardDisplay;
@@ -146,6 +224,8 @@ await page.waitForSelector('#screen-review:not([hidden])', { timeout: 15000 });
 await page.waitForFunction(() => /Text read|No text|not available/.test(document.getElementById('ocr-label').textContent), null, { timeout: 60000 });
 const reviewState = await page.evaluate(() => ({ name: document.getElementById('f-name').value, type: document.getElementById('f-type').value, label: document.getElementById('ocr-label').textContent }));
 check('review screen OCR prefilled the name', /elf warrior/i.test(reviewState.name), JSON.stringify(reviewState));
+const fullFrameState = await page.evaluate(() => ({ full: document.getElementById('btn-crop-full').getAttribute('aria-pressed'), autoDisabled: document.getElementById('btn-crop-auto').disabled, note: document.getElementById('crop-note').textContent }));
+check('no card edge: review defaults to Full frame', fullFrameState.full === 'true' && fullFrameState.autoDisabled, JSON.stringify(fullFrameState));
 await page.screenshot({ path: resolve(outDir, 'review.png'), fullPage: true });
 await page.fill('#f-name', 'Elf Warrior');
 await page.click('#btn-confirm');
@@ -157,6 +237,31 @@ await page.click('#btn-final-back');
 await page.waitForSelector('#screen-library:not([hidden])');
 await page.waitForTimeout(300);
 check('library lists the saved card', (await page.locator('#list .row').count()) === 1);
+
+// Crop toggle: a photo with a detectable card opens on Auto; Full frame redraws the preview.
+const scenePng = await page.evaluate(async () => {
+  const c = window.__scenes.scene(window.__scenes.card(true));
+  const b = await new Promise(r => c.toBlob(r, 'image/png'));
+  return Array.from(new Uint8Array(await b.arrayBuffer()));
+});
+const scenePath = resolve(outDir, 'scene.png');
+await writeFile(scenePath, Buffer.from(scenePng));
+await page.click('#btn-scan');
+await page.click('#btn-sheet-continue');
+await page.waitForSelector('#screen-camera:not([hidden])');
+await page.setInputFiles('#file-library', scenePath);
+await page.waitForSelector('#screen-review:not([hidden])', { timeout: 15000 });
+const previewSig = () => page.evaluate(() => { const d = document.getElementById('review-canvas').getContext('2d').getImageData(0, 0, 300, 400).data; let s = 0; for (let i = 0; i < d.length; i += 4) s = (s * 31 + d[i] + d[i + 1] * 7 + d[i + 2] * 13) % 1000000007; return s; });
+const autoState = await page.evaluate(() => ({ auto: document.getElementById('btn-crop-auto').getAttribute('aria-pressed'), note: document.getElementById('crop-note').textContent }));
+const autoSig = await previewSig();
+await page.screenshot({ path: resolve(outDir, 'review-auto.png'), fullPage: true });
+await page.click('#btn-crop-full');
+const fullSig = await previewSig();
+const toggled = await page.evaluate(() => document.getElementById('btn-crop-full').getAttribute('aria-pressed'));
+check('card found: review defaults to Auto', autoState.auto === 'true' && /found/i.test(autoState.note), JSON.stringify(autoState));
+check('Crop toggle redraws the preview', toggled === 'true' && autoSig !== fullSig);
+await page.click('#btn-back');
+await page.waitForSelector('#screen-library:not([hidden])');
 const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
 check('no horizontal overflow at 400px', !overflow);
 check('no page errors', errors.length === 0, errors.join(' | '));
