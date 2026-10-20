@@ -169,7 +169,17 @@ await page.evaluate(() => {
       if (pt) { g.font = 'bold 44px Arial'; g.textAlign = 'right'; g.fillText(pt, 640, 915); }
       return c;
     },
-    scene(card) {
+    // Landscape card (SWU leader/base shape) with a red marker at its top-left.
+    landscapeCard() {
+      const c = canvas(980, 700), g = c.getContext('2d');
+      g.fillStyle = '#000'; g.fillRect(0, 0, 980, 700);
+      g.fillStyle = '#f2eee2'; g.fillRect(40, 40, 900, 620);
+      g.fillStyle = '#f00'; g.fillRect(70, 70, 160, 120);
+      g.fillStyle = '#7a8fa6'; g.fillRect(300, 150, 600, 380);
+      g.fillStyle = '#222'; g.font = 'bold 44px Arial'; g.fillText('Test Base', 300, 110);
+      return c;
+    },
+    scene(card, { degrees = 7, keystone = true } = {}) {
       const c = canvas(1400, 1900), g = c.getContext('2d');
       g.fillStyle = '#8a5a2e'; g.fillRect(0, 0, 1400, 1900);
       for (let i = 0; i < 70; i++) {
@@ -177,9 +187,14 @@ await page.evaluate(() => {
         g.fillRect(0, (i * 977) % 1900, 1400, 3 + (i * 7) % 9);
       }
       if (card) {
-        const k = canvas(700, 980), kg = k.getContext('2d');
-        for (let y = 0; y < 980; y++) { const w = 700 * (0.94 + 0.06 * y / 979); kg.drawImage(card, 0, y, 700, 1, (700 - w) / 2, y, w, 1); }
-        g.translate(700, 950); g.rotate(7 * Math.PI / 180); g.drawImage(k, -350, -490);
+        const cw = card.width, ch = card.height;
+        let k = card;
+        if (keystone) {
+          k = canvas(cw, ch);
+          const kg = k.getContext('2d');
+          for (let y = 0; y < ch; y++) { const w = cw * (0.94 + 0.06 * y / (ch - 1)); kg.drawImage(card, 0, y, cw, 1, (cw - w) / 2, y, w, 1); }
+        }
+        g.translate(700, 950); g.rotate(degrees * Math.PI / 180); g.drawImage(k, -cw / 2, -ch / 2);
       }
       return c;
     },
@@ -211,11 +226,25 @@ const crop = await page.evaluate(() => {
   // Zero-trim position of the stroke's outer edge in the 300×400 output.
   const expected = { top: 20 / 980 * 400, bottom: 20 / 980 * 400, left: 20 / 700 * 300, right: 20 / 700 * 300 };
 
+  const wide = S.scene(S.landscapeCard(), { degrees: 5, keystone: false });
+  const wOut = cd.preparePhoto(wide);
+  const wd = wOut.getContext('2d').getImageData(0, 0, 300, 400).data;
+  let wSum = 0, wCount = 0;
+  const reds = [0, 0, 0, 0]; // quadrants: top-left, top-right, bottom-left, bottom-right
+  for (let y = 0; y < 400; y++) for (let x = 0; x < 300; x++) {
+    const p = (y * 300 + x) * 4;
+    if (wd[p] === 255 && wd[p + 1] === 0 && wd[p + 2] === 0) reds[(y >= 200 ? 2 : 0) + (x >= 150 ? 1 : 0)]++;
+    if (x >= 9 && x < 291 && y >= 12 && y < 388) continue;
+    wSum += 0.2126 * wd[p] + 0.7152 * wd[p + 1] + 0.0722 * wd[p + 2]; wCount++;
+  }
+  const wideCard = cd.detectCard(wide);
+
   const empty = S.scene(null);
   return {
     bordered: { found: !!cd.detectCard(bordered), ok: ok(bOut), ring: sum / count },
     borderless: { found: !!cd.detectCard(borderless), ok: ok(lOut), edges, off: Object.keys(edges).map(k => Math.abs(edges[k] - expected[k])) },
     empty: { found: cd.detectCard(empty) !== null, ok: ok(cd.preparePhoto(empty)) },
+    landscape: { found: !!wideCard, size: wideCard ? `${wideCard.width}×${wideCard.height}` : '', ok: ok(wOut), ring: wSum / wCount, reds },
   };
 });
 check('auto-crop finds a bordered card', crop.bordered.found);
@@ -224,6 +253,10 @@ check('black border trimmed (outer ring luminance > 120)', crop.bordered.ring > 
 check('auto-crop finds a borderless card', crop.borderless.found);
 check('borderless card output is 300×400 palette-only', crop.borderless.ok);
 check('borderless card keeps its edge on all four sides (±5 px)', crop.borderless.off.every(v => v <= 5), JSON.stringify(crop.borderless.edges));
+check('landscape card: detectCard finds it upright at 4:3', crop.landscape.found && crop.landscape.size === '1200×900', crop.landscape.size);
+check('landscape card output is 300×400 palette-only', crop.landscape.ok);
+check('landscape card border trimmed (outer ring luminance > 120)', crop.landscape.ring > 120, crop.landscape.ring.toFixed(1));
+check('landscape card turned counterclockwise (top-left marker ends bottom-left)', crop.landscape.reds[2] > 200 && crop.landscape.reds[2] > 4 * Math.max(crop.landscape.reds[0], crop.landscape.reds[1], crop.landscape.reds[3]), JSON.stringify(crop.landscape.reds));
 check('no card: detectCard returns null', !crop.empty.found);
 check('no card: fallback output is 300×400 palette-only', crop.empty.ok);
 

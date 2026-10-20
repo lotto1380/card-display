@@ -44,11 +44,16 @@ offline support.
    the background, masks pixels that differ from it, cleans the mask (3×3 open and
    close), and keeps the largest connected component. Its corners are the extremes
    of x+y and x−y. It is accepted only if it is at least 15% of the frame, does not
-   touch the frame edge, is convex, and is portrait with a long/short ratio between
-   1.15 and 1.65. The photo is then perspective-warped to a straight 900 × 1200 card.
+   touch the frame edge, is convex, and has a long/short ratio between 1.15 and
+   1.65. A landscape match is also rejected when three or more other marks sit
+   around it (that is the art box of a card filling the frame, not a card on a
+   table). The photo is then perspective-warped to a straight 900 × 1200 card, or
+   1200 × 900 for a landscape card (SWU leaders and bases).
 2. `trimBorder` removes a solid dark frame (rows/columns ≥ 92% with luminance < 64),
    at most 12% per side, nothing if under 1.5% (borderless cards), and gives back a
-   1.5% margin so art that bleeds into the frame is kept.
+   1.5% margin so art that bleeds into the frame is kept. A landscape card is then
+   turned 90° counterclockwise, so it is upright on a landscape badge after the
+   Rotate 90° export.
 3. `fitToCard` crops the long axis to 3:4 by at most 4%; any remaining mismatch is
    letterboxed in white, never stretched.
 4. Resize to 300 × 400 and Floyd–Steinberg dither (unchanged).

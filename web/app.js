@@ -140,7 +140,7 @@
   // solid black border, fit to 3:4. From scratch, no OpenCV.
   // ---------------------------------------------------------------------------
   const CARD_W = 900, CARD_H = 1200;
-  const DETECT = { width: 480, ring: 0.04, threshold: 40, minArea: 0.15, minRatio: 1.15, maxRatio: 1.65 };
+  const DETECT = { width: 480, ring: 0.04, threshold: 40, minArea: 0.15, minRatio: 1.15, maxRatio: 1.65, minBlob: 0.0002, maxOthers: 3 };
   const TRIM = { dark: 64, share: 0.92, slack: 0.01, min: 0.015, max: 0.12, margin: 0.015 };
   const FIT_MAX_CROP = 0.04;
 
@@ -164,25 +164,30 @@
     return out;
   }
 
-  // Largest 4-connected component: a label map and the winning label.
-  function largestComponent(mask, w, h) {
+  // Largest 4-connected component: a label map and the winning label, plus the
+  // number of other blobs of at least minOther pixels that stay clear of the
+  // image edge (text and symbols on a card face; a table around a card has few).
+  function largestComponent(mask, w, h, minOther = Infinity) {
     const n = w * h, labels = new Int32Array(n), queue = new Int32Array(n);
-    let best = 0, bestSize = 0, next = 0;
+    let best = 0, bestSize = 0, next = 0, inner = 0;
     for (let s = 0; s < n; s++) {
       if (!mask[s] || labels[s]) continue;
       next++;
-      let head = 0, tail = 0;
+      let head = 0, tail = 0, edge = false;
       queue[tail++] = s; labels[s] = next;
       while (head < tail) {
         const i = queue[head++], x = i % w;
+        if (x === 0 || x === w - 1 || i < w || i >= n - w) edge = true;
         if (x > 0 && mask[i - 1] && !labels[i - 1]) { labels[i - 1] = next; queue[tail++] = i - 1; }
         if (x < w - 1 && mask[i + 1] && !labels[i + 1]) { labels[i + 1] = next; queue[tail++] = i + 1; }
         if (i >= w && mask[i - w] && !labels[i - w]) { labels[i - w] = next; queue[tail++] = i - w; }
         if (i + w < n && mask[i + w] && !labels[i + w]) { labels[i + w] = next; queue[tail++] = i + w; }
       }
+      if (tail >= minOther && !edge) inner++;
       if (tail > bestSize) { bestSize = tail; best = next; }
     }
-    return { labels, label: best, size: bestSize };
+    if (bestSize >= minOther) inner--; // the winner is not an "other" blob (edge-touching winners are rejected anyway)
+    return { labels, label: best, size: bestSize, others: Math.max(0, inner) };
   }
 
   // Component area with its holes filled: everything not reachable from the image edge.
@@ -213,7 +218,7 @@
     return true;
   }
 
-  // Corners [tl, tr, br, bl] of the card in source pixels, or null.
+  // { corners: [tl, tr, br, bl] in source pixels, landscape }, or null.
   function findCardQuad(img) {
     const { w: iw, h: ih } = sourceSize(img);
     const w = Math.min(DETECT.width, iw), h = Math.max(2, Math.round(ih * (w / iw)));
@@ -236,7 +241,7 @@
     }
     mask = morph(morph(mask, w, h, false), w, h, true); // open
     mask = morph(morph(mask, w, h, true), w, h, false); // close
-    const { labels, label, size } = largestComponent(mask, w, h);
+    const { labels, label, size, others } = largestComponent(mask, w, h, Math.round(DETECT.minBlob * w * h));
     if (!size) return null;
     let tl, tr, brc, bl, minSum = Infinity, maxSum = -Infinity, minDiff = Infinity, maxDiff = -Infinity;
     for (let i = 0; i < labels.length; i++) {
@@ -252,11 +257,14 @@
     if (filledArea(labels, label, w, h) < DETECT.minArea * w * h) return null;
     const quad = [tl, tr, brc, bl];
     if (!isConvex(quad)) return null;
-    // Portrait only: the output is portrait, and a landscape blob inside a
-    // full-frame card is usually its art box.
+    // Long side over short side, in either orientation.
     const ratio = (dist(tl, bl) + dist(tr, brc)) / (dist(tl, tr) + dist(bl, brc));
-    if (!(ratio >= DETECT.minRatio && ratio <= DETECT.maxRatio)) return null;
-    return quad.map(([x, y]) => [(x + 0.5) * (iw / w), (y + 0.5) * (ih / h)]);
+    const landscape = ratio < 1, aspect = landscape ? 1 / ratio : ratio;
+    if (!(aspect >= DETECT.minRatio && aspect <= DETECT.maxRatio)) return null;
+    // A landscape blob with text and symbols around it is most likely the art
+    // box of a card that fills the frame, not a landscape card on a table.
+    if (landscape && others >= DETECT.maxOthers) return null;
+    return { corners: quad.map(([x, y]) => [(x + 0.5) * (iw / w), (y + 0.5) * (ih / h)]), landscape, others };
   }
 
   // Homography taking the w×h rectangle onto quad [tl, tr, br, bl] (8×8 Gaussian elimination).
@@ -291,7 +299,8 @@
   // photo is first reduced so the card is at most ~2× the output size.
   function warpQuad(img, quad, dw, dh) {
     const { w: iw, h: ih } = sourceSize(img);
-    const s = Math.min(1, (2 * dh) / Math.max(dist(quad[0], quad[3]), dist(quad[1], quad[2])));
+    const longSide = Math.max(dist(quad[0], quad[3]), dist(quad[1], quad[2]), dist(quad[0], quad[1]), dist(quad[3], quad[2]));
+    const s = Math.min(1, (2 * Math.max(dw, dh)) / longSide);
     const sw = Math.max(1, Math.round(iw * s)), sh = Math.max(1, Math.round(ih * s));
     let src;
     if (s < 1) src = drawScaled(img, 0, 0, iw, ih, sw, sh);
@@ -320,10 +329,20 @@
     return out;
   }
 
-  // Straightened 900×1200 card canvas, or null when no card is found.
+  // Straightened, upright card canvas: 900×1200 for a portrait card, 1200×900
+  // for a landscape one (SWU leaders and bases). null when no card is found.
   function detectCard(img) {
-    const quad = findCardQuad(img);
-    return quad ? warpQuad(img, quad, CARD_W, CARD_H) : null;
+    const found = findCardQuad(img);
+    if (!found) return null;
+    return found.landscape ? warpQuad(img, found.corners, CARD_H, CARD_W) : warpQuad(img, found.corners, CARD_W, CARD_H);
+  }
+
+  // 90° counterclockwise: the card's top-left ends up bottom-left.
+  function rotateCounterclockwise(src) {
+    const c = makeCanvas(src.height, src.width), g = c.getContext('2d');
+    g.translate(0, c.height); g.rotate(-Math.PI / 2);
+    g.drawImage(src, 0, 0);
+    return c;
   }
 
   // Remove a solid dark frame. Each side scans inward (allowing ~1% of stray
@@ -385,7 +404,11 @@
     if (crop === 'auto') {
       const straight = card === undefined ? detectCard(img) : card;
       if (straight) {
-        const fit = fitToCard(trimBorder(straight));
+        // A landscape card is trimmed upright, then turned counterclockwise into
+        // portrait; the Rotate 90° export turns it back for a landscape badge.
+        let trimmed = trimBorder(straight);
+        if (trimmed.width > trimmed.height) trimmed = rotateCounterclockwise(trimmed);
+        const fit = fitToCard(trimmed);
         return ditherRegion(fit, { x: 0, y: 0, w: fit.width, h: fit.height });
       }
     }
@@ -1215,7 +1238,7 @@
       const outputs = { full: preparePhoto(source, { crop: 'full' }), auto: card ? preparePhoto(source, { card }) : null };
       // OCR reads the straightened card when there is one.
       const ocrCanvas = prepareForOcr(card || source);
-      const ocrCorner = card ? prepareCorner(card) : null;
+      const ocrCorner = card && card.height > card.width ? prepareCorner(card) : null; // P/T sits bottom-right on portrait cards
       state.review = { outputs, crop: card ? 'auto' : 'full', warnings: quality.warnings, ocrCanvas, ocrCorner };
       $('toast').hidden = true;
       openReview();
@@ -1454,7 +1477,7 @@
     try {
       const card = detectCard(source);
       ocrSource = prepareForOcr(card || source);
-      ocrCorner = card ? prepareCorner(card) : null;
+      ocrCorner = card && card.height > card.width ? prepareCorner(card) : null;
     } catch (e) { toast('That photo could not be processed.'); return; }
     const step = copy.step;
     runOcr(ocrSource, ocrCorner, 'cs-', parsed => {
