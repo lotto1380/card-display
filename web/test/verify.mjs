@@ -447,18 +447,19 @@ const thumbState = await page.evaluate(() => {
 });
 check('library thumbnails are smooth 96×128', thumbState.w === 96 && thumbState.h === 128 && thumbState.rendering !== 'pixelated', JSON.stringify(thumbState));
 
-// The Rotate 90° choice is remembered as the default.
+// Rotate 90° is on by default; turning it off is remembered.
 await page.click('#list .row');
 await page.waitForSelector('#screen-final:not([hidden])');
 const rotateBefore = await page.evaluate(() => ({ checked: document.getElementById('f-rotate').checked, rendering: getComputedStyle(document.getElementById('final-img')).imageRendering }));
-await page.check('#f-rotate');
+await page.uncheck('#f-rotate');
 await page.click('#btn-final-back');
 await page.waitForSelector('#screen-library:not([hidden])');
 await page.click('#list .row');
 await page.waitForSelector('#screen-final:not([hidden])');
 const rotateAfter = await page.evaluate(() => ({ checked: document.getElementById('f-rotate').checked, landscape: document.getElementById('final-img').classList.contains('landscape'), stored: localStorage.getItem('card_display.rotate') }));
 check('final preview stays pixelated', rotateBefore.rendering === 'pixelated', rotateBefore.rendering);
-check('Rotate 90° is remembered as the default', !rotateBefore.checked && rotateAfter.checked && rotateAfter.landscape && rotateAfter.stored === 'true', JSON.stringify(rotateAfter));
+check('Rotate 90° is on by default', rotateBefore.checked, JSON.stringify(rotateBefore));
+check('turning Rotate 90° off is remembered', !rotateAfter.checked && !rotateAfter.landscape && rotateAfter.stored === 'false', JSON.stringify(rotateAfter));
 await page.click('#btn-final-back');
 await page.waitForSelector('#screen-library:not([hidden])');
 

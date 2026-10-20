@@ -1372,7 +1372,7 @@
       toast('This card image could not be read.');
       return;
     }
-    $('f-rotate').checked = prefs.get('rotate', false);
+    $('f-rotate').checked = prefs.get('rotate', true); // the 4.2" badge is landscape
     renderFinalImage();
     const meta = $('final-meta');
     meta.replaceChildren();

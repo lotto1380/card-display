@@ -61,7 +61,8 @@ cd web && npm run icons                 # regenerate icons/ with headless Chromi
   need no IDB version bump; changing the shape of existing fields does.
 - Library thumbnails are 96×128, smoothly downscaled and cached per record id for
   the session (not pixelated); the final preview stays pixelated, as on the badge.
-  The Rotate 90° choice is remembered in localStorage (`card_display.rotate`).
+  Rotate 90° defaults to on (landscape badge); the user's choice is remembered in
+  localStorage (`card_display.rotate`) and overrides that.
 - Keep it one `app.js`; sections are marked with banner comments. Add a module
   only if a section passes ~300 lines.
 - Screens are `<section id="screen-*">` toggled with the `hidden` attribute via

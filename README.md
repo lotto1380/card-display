@@ -33,7 +33,7 @@ trim a black border), glare and blur warnings, on-device OCR
 game text / P/T, correction memory keyed by card name, encrypted local library
 (IndexedDB + AES-GCM, non-extractable key), search and recents, two-photo text-only
 Copy Card, Send-to-app (Web Share) and Download export, rotate for landscape
-(remembered as the default), smooth library thumbnails, installable PWA with
+(on by default, choice remembered), smooth library thumbnails, installable PWA with
 offline support.
 
 ### Photo pipeline
