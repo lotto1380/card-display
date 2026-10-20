@@ -154,7 +154,7 @@ check('merge: name, color and keywords', mf.nameColorKeywords.name === 'Shard Tw
 await page.evaluate(() => {
   const canvas = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
   window.__scenes = {
-    card(bordered) {
+    card(bordered, { pt } = {}) {
       const c = canvas(700, 980), g = c.getContext('2d');
       if (bordered) {
         g.fillStyle = '#000'; g.fillRect(0, 0, 700, 980);
@@ -166,6 +166,7 @@ await page.evaluate(() => {
       g.fillStyle = '#7a8fa6'; g.fillRect(80, 150, 540, 400);
       g.fillStyle = '#222'; g.font = 'bold 44px Arial'; g.fillText('Test Card', 80, 110);
       g.font = '30px Arial'; g.fillText('Synthetic face for the crop test.', 80, 640);
+      if (pt) { g.font = 'bold 44px Arial'; g.textAlign = 'right'; g.fillText(pt, 640, 915); }
       return c;
     },
     scene(card) {
@@ -247,6 +248,36 @@ const ocrResult = await page.evaluate(async () => {
     return { ok: true, ms: Date.now() - started, parsed, state: cd.ocr.state };
   } catch (e) { return { ok: false, error: String(e && e.message || e), state: cd.ocr.state }; }
 });
+const ptParse = await page.evaluate(() => {
+  const p = window.__cardDisplay.parseOcrText;
+  return {
+    lenient: p('Ember Courier\nCreature - Goblin Scout\nHaste\n212'),
+    strict: p('Ember Courier\nCreature - Goblin Scout\nHaste\n3/3'),
+    double: p('Stone Colossus\nArtifact Creature - Golem\nTrample\n10110'),
+    damage: p('Spark Thrower\nCreature - Goblin\nTap: deal\n212 damage\nto any target.'),
+    none: p('Swift Courier\nCreature - Goblin Scout\nHaste'),
+  };
+});
+check('P/T parse: "212" on the last line is 2/2', ptParse.lenient.pt === '2/2' && ptParse.lenient.rulesText === 'Haste', JSON.stringify(ptParse.lenient));
+check('P/T parse: "3/3"', ptParse.strict.pt === '3/3' && ptParse.strict.rulesText === 'Haste', JSON.stringify(ptParse.strict));
+check('P/T parse: "10110" is 10/10', ptParse.double.pt === '10/10' && ptParse.double.rulesText === 'Trample', JSON.stringify(ptParse.double));
+check('P/T parse: "212 damage" mid-text stays text', ptParse.damage.pt === '' && ptParse.damage.rulesText.includes('212 damage'), JSON.stringify(ptParse.damage));
+check('P/T parse: last line "Haste" gives no pt', ptParse.none.pt === '' && ptParse.none.rulesText === 'Haste', JSON.stringify(ptParse.none));
+
+// Corner pass: single-line OCR of the straightened card's bottom-right corner.
+const corner = await page.evaluate(async () => {
+  const cd = window.__cardDisplay, S = window.__scenes;
+  const card = cd.detectCard(S.scene(S.card(true, { pt: '2/2' })));
+  if (!card) return { found: false };
+  const started = performance.now();
+  const pt = await cd.ocr.readCorner(cd.prepareCorner(card));
+  const ms = Math.round(performance.now() - started);
+  const full = await cd.ocr.read(cd.prepareForOcr(card), null, cd.prepareCorner(card));
+  return { found: true, pt, ms, fullPt: full.pt, cornerMs: full.cornerMs };
+});
+check('corner pass reads the P/T', corner.found && corner.pt === '2/2' && corner.fullPt === '2/2', JSON.stringify(corner));
+check('corner pass adds well under a second', corner.found && corner.ms < 1000 && corner.cornerMs < 1000, `${corner.ms} ms alone, ${corner.cornerMs} ms after the main pass`);
+
 check('live OCR runs from vendored files', ocrResult.ok, ocrResult.ok ? `${ocrResult.ms} ms` : ocrResult.error);
 if (ocrResult.ok) {
   check('live OCR finds the card name', /ember courier/i.test(ocrResult.parsed.name), JSON.stringify(ocrResult.parsed.name));
@@ -342,7 +373,7 @@ await page.fill('#cs-name', 'Glass Mimic');
 await page.fill('#cs-rules', 'Enter as a copy of a creature, except it has haste.');
 await page.click('#btn-cs-next');
 const step2 = await scanCopyStep(targetPath);
-check('copy step 2: OCR read the copied card', /ember courier/i.test(step2.name), JSON.stringify(step2));
+check('copy step 2: OCR read the copied card and its P/T', /ember courier/i.test(step2.name) && step2.pt === '2/2', JSON.stringify(step2));
 await page.fill('#cs-name', 'Ember Courier');
 await page.fill('#cs-type', 'Creature — Goblin Scout');
 await page.fill('#cs-rules', 'Whenever Ember Courier attacks, draw a card.');

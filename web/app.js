@@ -398,7 +398,25 @@
     const maxH = 1600;
     const scale = Math.min(1, maxH / r.h);
     const dw = Math.max(1, Math.round(r.w * scale)), dh = Math.max(1, Math.round(r.h * scale));
-    const c = drawScaled(img, r.x, r.y, r.w, r.h, dw, dh);
+    return grayStretch(drawScaled(img, r.x, r.y, r.w, r.h, dw, dh));
+  }
+
+  // P/T corner of a straightened portrait card: bottom 12%, right 35%, scaled
+  // 2× with smoothing, for a single-line OCR pass. Taken from the border-trimmed
+  // card, since a black frame in the crop reads as stray marks.
+  function prepareCorner(straight) {
+    const card = trimBorder(straight);
+    const x = Math.round(card.width * 0.65), y = Math.round(card.height * 0.88);
+    const w = card.width - x, h = card.height - y;
+    const c = makeCanvas(w * 2, h * 2), g = c.getContext('2d');
+    g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+    g.drawImage(card, x, y, w, h, 0, 0, w * 2, h * 2);
+    return grayStretch(c);
+  }
+
+  // Grayscale and stretch contrast to the full 0–255 range, in place.
+  function grayStretch(c) {
+    const dw = c.width, dh = c.height;
     const g = c.getContext('2d');
     const id = g.getImageData(0, 0, dw, dh);
     const d = id.data;
@@ -707,12 +725,24 @@
   const PT_LINE = /^\d+\s*\/\s*\d+$/;
   const TYPE_WORDS = ['creature', 'artifact', 'enchantment', 'planeswalker', 'instant', 'sorcery', 'land', 'unit', 'upgrade', 'event'];
 
+  // OCR often reads the slash in "2/2" as 1, l, I, | or \. That reading is
+  // only trusted on the last line, and only when the line is that short.
+  const PT_LENIENT = /^(\d{1,2})\s*[\/1lI|\\]\s*(\d{1,2})$/;
+  const ocrLines = text => text.split(/[\r\n]+/).map(l => l.trim()).filter(l => l.length > 1);
+
+  // { pt, index } from lines[from…]: the first strict match on any line, else a
+  // lenient match on the last line. index is -1 when nothing matched.
+  function findPt(lines, from = 0) {
+    for (let i = from; i < lines.length; i++) if (PT_LINE.test(lines[i])) return { pt: lines[i].replace(/\s+/g, ''), index: i };
+    const last = lines.length - 1, m = last >= from && lines[last].length <= 5 ? PT_LENIENT.exec(lines[last]) : null;
+    return m ? { pt: `${m[1]}/${m[2]}`, index: last } : { pt: '', index: -1 };
+  }
+
   function parseOcrText(rawText) {
-    const lines = rawText.split(/[\r\n]+/).map(l => l.trim()).filter(l => l.length > 1);
+    const lines = ocrLines(rawText);
     if (!lines.length) return { name: '', typeLine: '', rulesText: '', pt: '', rawText: '' };
     const name = lines[0];
-    const ptLine = lines.slice(1).find(line => PT_LINE.test(line));
-    const pt = ptLine ? ptLine.replace(/\s+/g, '') : '';
+    const { pt, index: ptIndex } = findPt(lines, 1);
     let typeIndex = -1;
     for (let i = 1; i < lines.length; i++) {
       const lower = lines[i].toLowerCase();
@@ -720,15 +750,24 @@
     }
     const typeLine = typeIndex >= 0 ? lines[typeIndex] : '';
     const rulesStart = typeIndex >= 0 ? typeIndex + 1 : 1;
-    const rulesText = lines.slice(rulesStart).filter(line => {
+    const rulesText = lines.map((line, i) => ({ line, i })).slice(rulesStart).filter(({ line, i }) => {
       const lower = line.toLowerCase();
-      return !PT_LINE.test(line) && !lower.includes('©') && !lower.startsWith('illus.');
-    }).join('\n');
+      return i !== ptIndex && !PT_LINE.test(line) && !lower.includes('©') && !lower.startsWith('illus.');
+    }).map(({ line }) => line).join('\n');
     return { name, typeLine, rulesText, pt, rawText };
   }
 
   const ocr = {
     worker: null, loading: null, state: 'idle', // idle | loading | ready | failed
+    progress: null, // progress callback of the job that is running now
+    chain: Promise.resolve(),
+    // One job at a time on the worker, so the corner pass's page-segmentation
+    // mode can never leak into another recognize call.
+    exclusive(fn) {
+      const run = this.chain.then(fn, fn);
+      this.chain = run.catch(() => {});
+      return run;
+    },
     async ensureScript() {
       if (window.Tesseract) return;
       await new Promise((resolve, reject) => {
@@ -738,7 +777,7 @@
         document.head.append(s);
       });
     },
-    async ensureWorker(onProgress) {
+    async ensureWorker() {
       if (this.worker) return this.worker;
       if (this.loading) return this.loading;
       this.state = 'loading';
@@ -749,7 +788,7 @@
           corePath: 'vendor/tesseract',
           langPath: 'vendor/tessdata',
           gzip: true,
-          logger: m => onProgress && onProgress(m),
+          logger: m => this.progress && this.progress(m),
           errorHandler: () => {},
         });
         this.worker = worker; this.state = 'ready';
@@ -757,10 +796,42 @@
       })().catch(err => { this.state = 'failed'; this.loading = null; throw err; });
       return this.loading;
     },
-    async read(canvas, onProgress) {
-      const worker = await this.ensureWorker(onProgress);
-      const result = await worker.recognize(canvas);
-      return parseOcrText(result.data.text || '');
+    // Main pass on the card; with `corner` (prepareCorner output) a second,
+    // single-line pass whose P/T wins over the main pass. parsed.cornerMs
+    // records how long that pass took.
+    async read(canvas, onProgress, corner) {
+      this.progress = onProgress || null;
+      const worker = await this.ensureWorker();
+      return this.exclusive(async () => {
+        this.progress = onProgress || null;
+        try {
+          const result = await worker.recognize(canvas);
+          const parsed = parseOcrText(result.data.text || '');
+          if (corner) {
+            this.progress = null;
+            const started = performance.now();
+            const pt = await this.cornerPt(worker, corner);
+            parsed.cornerMs = Math.round(performance.now() - started);
+            if (pt) parsed.pt = pt;
+          }
+          return parsed;
+        } finally { this.progress = null; }
+      });
+    },
+    async readCorner(corner) {
+      const worker = await this.ensureWorker();
+      return this.exclusive(() => this.cornerPt(worker, corner));
+    },
+    async cornerPt(worker, corner) {
+      await worker.setParameters({ tessedit_pageseg_mode: '7' }); // single line
+      try {
+        const result = await worker.recognize(corner);
+        // Drop stray marks at either end of the line (the frame edge reads as } ] |).
+        const lines = ocrLines(result.data.text || '').map(l => l.replace(/^[^\dA-Za-z]+|[^\dA-Za-z]+$/g, ''));
+        return findPt(lines).pt;
+      } finally {
+        await worker.setParameters({ tessedit_pageseg_mode: '6' }); // Tesseract.js default (single block)
+      }
     },
   };
 
@@ -1144,7 +1215,8 @@
       const outputs = { full: preparePhoto(source, { crop: 'full' }), auto: card ? preparePhoto(source, { card }) : null };
       // OCR reads the straightened card when there is one.
       const ocrCanvas = prepareForOcr(card || source);
-      state.review = { outputs, crop: card ? 'auto' : 'full', warnings: quality.warnings, ocrCanvas };
+      const ocrCorner = card ? prepareCorner(card) : null;
+      state.review = { outputs, crop: card ? 'auto' : 'full', warnings: quality.warnings, ocrCanvas, ocrCorner };
       $('toast').hidden = true;
       openReview();
     } catch (e) {
@@ -1182,9 +1254,9 @@
     drawReview();
     $('f-name').value = ''; $('f-type').value = ''; $('f-rules').value = ''; $('f-pt').value = '';
     show('review', 'Review');
-    const source = state.review.ocrCanvas;
-    runOcr(source, '', parsed => {
-      if (state.review) state.review.ocrCanvas = null;
+    const { ocrCanvas, ocrCorner } = state.review;
+    runOcr(ocrCanvas, ocrCorner, '', parsed => {
+      if (state.review) state.review.ocrCanvas = state.review.ocrCorner = null;
       return fillFields(parsed, { name: 'f-name', typeLine: 'f-type', rulesText: 'f-rules', pt: 'f-pt' });
     });
   }
@@ -1200,7 +1272,7 @@
 
   // OCR with progress into the status block whose ids start with `prefix`
   // ('' for review, 'cs-' for the copy steps). apply(parsed) fills the fields.
-  async function runOcr(source, prefix, apply) {
+  async function runOcr(source, corner, prefix, apply) {
     const job = ++state.ocrJob;
     const status = $(prefix + 'ocr-status'), label = $(prefix + 'ocr-label'), pct = $(prefix + 'ocr-pct'), bar = $(prefix + 'ocr-bar');
     if (!source) return;
@@ -1217,7 +1289,7 @@
       }
     };
     try {
-      const parsed = await ocr.read(source, onProgress);
+      const parsed = await ocr.read(source, onProgress, corner);
       if (job !== state.ocrJob) return;
       bar.style.width = '100%'; pct.textContent = '';
       if (!parsed.name && !parsed.typeLine && !parsed.rulesText) {
@@ -1378,10 +1450,14 @@
     copy.scanning = false;
     copy[COPY_STEPS[copy.step].side] = blankCard();
     openCopyStep(copy.step);
-    let ocrSource;
-    try { ocrSource = prepareForOcr(detectCard(source) || source); } catch (e) { toast('That photo could not be processed.'); return; }
+    let ocrSource, ocrCorner;
+    try {
+      const card = detectCard(source);
+      ocrSource = prepareForOcr(card || source);
+      ocrCorner = card ? prepareCorner(card) : null;
+    } catch (e) { toast('That photo could not be processed.'); return; }
     const step = copy.step;
-    runOcr(ocrSource, 'cs-', parsed => {
+    runOcr(ocrSource, ocrCorner, 'cs-', parsed => {
       if (state.copy !== copy || copy.step !== step || state.screen !== 'copystep') return;
       return fillFields(parsed, CS_FIELDS);
     });
@@ -1494,5 +1570,5 @@
   }
 
   // Exposed for the verification script only.
-  window.__cardDisplay = { ditherFourColors, snapToPalette, buildTextCard, preparePhoto, prepareForOcr, detectCard, findCardQuad, trimBorder, fitToCard, mergeCopy, mergeDraft, copyPatterns, exceptClause, inspectImage, parseOcrText, ocr, repo, store, transfer, prefs, thumbnailUrl, PALETTE, APP_VERSION };
+  window.__cardDisplay = { ditherFourColors, snapToPalette, buildTextCard, preparePhoto, prepareForOcr, prepareCorner, detectCard, findCardQuad, trimBorder, fitToCard, mergeCopy, mergeDraft, copyPatterns, exceptClause, inspectImage, parseOcrText, ocr, repo, store, transfer, prefs, thumbnailUrl, PALETTE, APP_VERSION };
 })();

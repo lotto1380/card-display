@@ -72,8 +72,11 @@ scratch (no OpenCV). The Flutter app still center-crops.
    text-only preview.
 
 Saved copies have `isCopy: true`, `sourceCardName` (the copier) and
-`copiedCardName` (the target). Any card can carry `pt`, read from a line such as
-`2/2` by OCR, shown on the final screen and in the bottom-right of a text card.
+`copiedCardName` (the target). Any card can carry `pt`, shown on the final screen
+and in the bottom-right of a text card. OCR finds it from a `2/2` line anywhere, or
+from a short last line where the slash was misread (`212` → `2/2`, `10110` →
+`10/10`). When a card was detected, a second single-line pass reads the
+bottom-right corner (bottom 12%, right 35%, 2×) and its P/T wins.
 These are optional record fields, so the IndexedDB version is unchanged.
 
 ### Run locally
